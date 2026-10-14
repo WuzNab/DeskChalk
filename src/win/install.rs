@@ -2,8 +2,8 @@
 //!
 //! The setup wizard (installer/DeskChalk.iss, built with Inno Setup) installs DeskChalk per
 //! user into %LOCALAPPDATA%\Programs\DeskChalk next to its uninstaller (unins000.exe) and
-//! registers it in Settings > Apps / Programs and Features. DeskChalk_Portable.exe runs from
-//! anywhere without installing. Both keep boxes and settings in %APPDATA%\DeskChalk.
+//! registers it in Settings > Apps / Programs and Features. DeskChalk_Portable_v<version>.exe
+//! runs from anywhere without installing. Both keep boxes and settings in %APPDATA%\DeskChalk.
 
 use super::{reg, shell, CMD_QUIT, COMMAND_MSG, MAIN_CLASS};
 use std::path::{Path, PathBuf};

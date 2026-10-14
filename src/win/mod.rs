@@ -347,7 +347,8 @@ fn overlay_scene<'a>(v: &OverlayView<'a>, mon: &'a Monitor, origin: Pt, repel: O
             draft: drag.filter(|d| d.is_create()).map(|d| (d.rect, &v.cfg.defaults)),
         }),
         mix_colors: v.cfg.mix_colors,
-        bounds: Rect::new(0.0, 0.0, size.0, size.1),
+        // The overlay covers the work area; hints and titles stay inside it.
+        bounds: mon.work_rel(),
     }
 }
 
@@ -1811,8 +1812,14 @@ fn run_command(id: u32, target: Target) {
                 return;
             }
             let owner = with_app(|a| a.modal_owner()).flatten();
-            let q = "Remove DeskChalk?\n\nThis deletes all of your boxes and settings and the startup entry, then closes DeskChalk. Delete DeskChalk_Portable.exe yourself afterwards. Your desktop icons are not touched.";
-            if dialogs::ask(owner, q) {
+            let exe = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| "DeskChalk_Portable.exe".into());
+            let q = format!(
+                "Remove DeskChalk?\n\nThis deletes all of your boxes and settings and the startup entry, then closes DeskChalk. Delete {exe} yourself afterwards. Your desktop icons are not touched."
+            );
+            if dialogs::ask(owner, &q) {
                 with_app(|a| a.remove_portable());
             }
         }

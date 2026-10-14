@@ -1,6 +1,6 @@
 [package]
 name = "deskchalk"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Draw labeled boxes on your desktop wallpaper, behind your icons."
 repository = "https://github.com/WuzNab/DeskChalk"

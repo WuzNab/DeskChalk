@@ -150,11 +150,13 @@ pub fn draw(pm: &mut PixmapMut, s: &Scene) {
     if let Some(e) = &s.edit {
         if let Some((text, p)) = &e.label {
             let at = Pt::new(p.x + 18.0 * s.scale, p.y + 18.0 * s.scale);
-            draw_pill(pm, t, s, text, at, false, &visible);
+            draw_pill(pm, t, s, text, at, false, &s.bounds);
         }
         if let Some(h) = e.hint {
-            let at = Pt::new(visible.x + visible.w / 2.0, visible.bottom() - 46.0 * s.scale);
-            draw_pill(pm, t, s, h, at, true, &visible);
+            // Placed on the whole area, not this buffer: partial redraws must agree with full ones.
+            let area = s.bounds;
+            let at = Pt::new(area.x + area.w / 2.0, area.bottom() - 46.0 * s.scale);
+            draw_pill(pm, t, s, h, at, true, &area);
         }
     }
 }
@@ -535,13 +537,14 @@ fn draw_selection(pm: &mut PixmapMut, t: Transform, s: &Scene, r: Rect) {
     }
 }
 
-/// A dark rounded label. `centered` centers it horizontally on `at`, else `at` is its top-left.
-fn draw_pill(pm: &mut PixmapMut, t: Transform, s: &Scene, text: &str, at: Pt, centered: bool, visible: &Rect) {
+/// A dark rounded label kept inside `area`. `centered` centers it horizontally on `at`,
+/// else `at` is its top-left.
+fn draw_pill(pm: &mut PixmapMut, t: Transform, s: &Scene, text: &str, at: Pt, centered: bool, area: &Rect) {
     let Some(fonts) = s.ui_fonts else { return };
     let sc = s.scale;
     let px = 13.0 * sc;
     let (padx, pady) = (10.0 * sc, 5.0 * sc);
-    let shaped = fonts.fit(text, px, (visible.w - 4.0 * padx).max(px));
+    let shaped = fonts.fit(text, px, (area.w - 4.0 * padx).max(px));
     if shaped.is_empty() {
         return;
     }
@@ -549,7 +552,7 @@ fn draw_pill(pm: &mut PixmapMut, t: Transform, s: &Scene, text: &str, at: Pt, ce
     let w = shaped.width + 2.0 * padx;
     let h = asc + desc + 2.0 * pady;
     let mut box_r = Rect::new(if centered { at.x - w / 2.0 } else { at.x }, at.y, w, h);
-    box_r = box_r.clamp_into(&visible.inset(4.0 * sc));
+    box_r = box_r.clamp_into(&area.inset(4.0 * sc));
     if let Some(p) = rounded_rect(box_r, h / 2.0) {
         pm.fill_path(&p, &s.painter.paint(Rgb(0x18, 0x18, 0x18), 0.86), FillRule::Winding, t, None);
     }
@@ -615,6 +618,54 @@ mod tests {
         // Just outside blue's rounded corner, inside red: plain red, blended only once.
         let corner = pm.pixel(57, 37).unwrap();
         assert_eq!((corner.red(), corner.blue(), corner.alpha()), (128, 0, 128));
+    }
+
+    /// Redrawing part of the screen must give exactly the same pixels as a full redraw.
+    /// (The hint used to be placed relative to the redrawn part, leaving copies behind.)
+    #[test]
+    fn partial_redraw_matches_full_redraw() {
+        let ui = font("segoeui.ttf").and_then(|f| Fonts::new(vec![f]));
+        let zones = [
+            zone(1, Rect::new(20.0, 20.0, 200.0, 120.0), "", |s| s.fill = 30),
+            zone(2, Rect::new(150.0, 80.0, 200.0, 120.0), "", |s| {
+                s.color = Rgb(0xFF, 0x7F, 0x6E);
+                s.fill = 30;
+            }),
+        ];
+        let grid = Grid { origin: Pt::new(0.0, 0.0), cell: Pt::new(50.0, 50.0), area: Rect::new(0.0, 0.0, 400.0, 300.0) };
+        let scene = |origin: Pt| Scene {
+            origin,
+            scale: 1.0,
+            painter: Painter { swap_rb: false },
+            title_fonts: None,
+            ui_fonts: ui.as_ref(),
+            grid: Some(GridLayer { grid: &grid, color: Rgb(255, 255, 255), radius: 1.5, alpha: 1.0, repel: Some((Pt::new(250.0, 200.0), 1.0)) }),
+            zones: zones.iter().map(|z| ZoneItem { zone: z, rect: z.rect, selected: false }).collect(),
+            edit: Some(EditLayer { hint: Some("Drag to draw a box"), label: Some(("2 × 1 icons".into(), Pt::new(260.0, 210.0))), draft: None }),
+            mix_colors: true,
+            bounds: Rect::new(0.0, 0.0, 400.0, 300.0),
+        };
+        let mut full = Pixmap::new(400, 300).unwrap();
+        draw(&mut full.as_mut(), &scene(Pt::new(0.0, 0.0)));
+        let (px, py, pw, ph) = (180u32, 150u32, 160u32, 150u32);
+        let mut part = Pixmap::new(pw, ph).unwrap();
+        draw(&mut part.as_mut(), &scene(Pt::new(px as f32, py as f32)));
+        let mut mismatches = 0;
+        for y in 0..ph {
+            for x in 0..pw {
+                let a = full.pixel(px + x, py + y).unwrap();
+                let b = part.pixel(x, y).unwrap();
+                let diff = (a.red() as i32 - b.red() as i32).abs()
+                    + (a.green() as i32 - b.green() as i32).abs()
+                    + (a.blue() as i32 - b.blue() as i32).abs()
+                    + (a.alpha() as i32 - b.alpha() as i32).abs();
+                // Anti-aliasing may differ by a hair at buffer edges; anything else is a bug.
+                if diff > 8 {
+                    mismatches += 1;
+                }
+            }
+        }
+        assert!(mismatches < 40, "{mismatches} pixels differ between a partial and a full redraw");
     }
 
     /// Renders sample boxes over a fake wallpaper into target/render-preview.png.

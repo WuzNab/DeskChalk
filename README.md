@@ -10,8 +10,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/WuzNab/DeskChalk/releases/latest"><img alt="Download for Windows" src="https://img.shields.io/github/v/release/WuzNab/DeskChalk?label=download%20for%20windows&color=77DD77"></a>
+  <a href="https://github.com/WuzNab/DeskChalk/releases"><img alt="Download for Windows" src="https://img.shields.io/badge/download-for%20Windows-77DD77"></a>
   <a href="https://ko-fi.com/wuznab"><img alt="Support me on Ko-fi" src="https://ko-fi.com/img/githubbutton_sm.svg" height="20"></a>
+</p>
+
+<p align="center">
+  <img src="assets/demo.gif" width="800" alt="Drawing boxes on the desktop, naming them, styling them from the right-click menu, and dragging icons into them">
 </p>
 
 ---
@@ -28,9 +32,13 @@ draw labeled zones on the desktop background, on the fly, and drag icons into th
 - **Per monitor.** Each box belongs to the screen you drew it on and stays there, even after resolution or scaling changes.
 - **Lightweight.** A ~1 MB app that uses almost no memory or CPU while idle. No background services, no hooks.
 
+<p align="center">
+  <img src="assets/preview.png" width="800" alt="Example boxes: titles on the border line, a label chip, a dashed border, overlapping colors mixing, and the dot grid">
+</p>
+
 ## Install
 
-1. Download **DeskChalk_Setup.exe** from the [latest release](https://github.com/WuzNab/DeskChalk/releases/latest).
+1. Download **DeskChalk_Setup_v*x.y.z*.exe** from [Releases](https://github.com/WuzNab/DeskChalk/releases) (the newest one is at the top).
 2. Run it and follow the wizard. No admin rights needed; it installs just for you. You can choose to:
    - start DeskChalk when Windows starts (on by default)
    - add it to the Start menu
@@ -40,10 +48,10 @@ draw labeled zones on the desktop background, on the fly, and drag icons into th
 DeskChalk isn't code-signed yet, so Windows SmartScreen may say *"Windows protected your PC"*.
 Click **More info**, then **Run anyway**.
 
-**Updating:** run the newer `DeskChalk_Setup.exe`. It closes DeskChalk, updates it in place and keeps your boxes.
+**Updating:** run the newer `DeskChalk_Setup_v….exe`. It closes DeskChalk, updates it in place and keeps your boxes.
 Choose **Clean reinstall** on the first page if you'd rather start fresh (this deletes all boxes and settings).
 
-**Portable:** prefer not to install? Download **DeskChalk_Portable.exe** and run it from anywhere.
+**Portable:** prefer not to install? Download **DeskChalk_Portable_v*x.y.z*.exe** and run it from anywhere.
 
 ## Use it
 
@@ -78,7 +86,7 @@ This removes the app, its shortcuts, its startup entry, and your boxes and setti
 and your desktop icons are not touched.
 
 The portable version: tray menu → **Remove DeskChalk (portable)…** deletes its boxes, settings and startup entry;
-then delete `DeskChalk_Portable.exe` yourself.
+then delete the portable exe yourself.
 
 ## Requirements
 
@@ -106,7 +114,7 @@ Linux support planned.
 | `--diag` | Print what DeskChalk detects (desktop windows, monitors, icon grid) |
 | `--log` | Write a log file |
 
-The setup supports the usual Inno Setup switches, e.g. `DeskChalk_Setup.exe /SILENT` for an unattended install.
+The setup supports the usual Inno Setup switches, e.g. `DeskChalk_Setup_v0.2.1.exe /SILENT` for an unattended install.
 
 </details>
 
@@ -119,7 +127,7 @@ cargo build --release
 ```
 
 The app is `target\release\DeskChalk.exe` and runs from there without installing. To build the setup wizard,
-install [Inno Setup 6](https://jrsoftware.org/isinfo.php) and run `iscc /DAppVersion=0.2.0 installer\DeskChalk.iss`.
+install [Inno Setup 6](https://jrsoftware.org/isinfo.php) and run `iscc /DAppVersion=0.2.1 installer\DeskChalk.iss`.
 Push a `v*` tag to have GitHub Actions build both and publish a release.
 
 ## Support

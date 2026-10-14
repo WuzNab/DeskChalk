@@ -1,5 +1,5 @@
-# Push a tag like v0.2.0 to build the setup wizard and the portable exe and attach both
-# to a GitHub Release.
+# Push a tag like v0.2.1 (matching the version in Cargo.toml) to build
+# DeskChalk_Setup_v0.2.1.exe and DeskChalk_Portable_v0.2.1.exe and attach them to a release.
 name: Release
 
 on:
@@ -27,13 +27,17 @@ jobs:
         shell: pwsh
         run: |
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$version" -ne "${{ github.ref_name }}") {
+            throw "Tag ${{ github.ref_name }} doesn't match Cargo.toml version $version"
+          }
+          "VERSION=$version" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$version" installer\DeskChalk.iss
       - name: Collect files
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target\installer\DeskChalk_Setup.exe dist\
-          Copy-Item target\release\DeskChalk.exe dist\DeskChalk_Portable.exe
+          Copy-Item "target\installer\DeskChalk_Setup_v$env:VERSION.exe" dist\
+          Copy-Item target\release\DeskChalk.exe "dist\DeskChalk_Portable_v$env:VERSION.exe"
           Get-ChildItem dist\*.exe | ForEach-Object {
             "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name
           } | Out-File -Encoding ascii dist\SHA256SUMS.txt
@@ -41,7 +45,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/DeskChalk_Setup.exe
-            dist/DeskChalk_Portable.exe
+            dist/*.exe
             dist/SHA256SUMS.txt
           generate_release_notes: true
