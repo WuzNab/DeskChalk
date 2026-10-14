@@ -49,6 +49,14 @@ impl Fonts {
         (f.ascender() as f32 * s, -(f.descender() as f32) * s)
     }
 
+    /// Height of capital letters in pixels (used to center text on a line).
+    pub fn cap_height(&self, px: f32) -> f32 {
+        let f = self.faces[0].face();
+        let upem = f.units_per_em() as f32;
+        let cap = f.capital_height().map_or(0.7 * upem, |c| c as f32);
+        cap * px / upem
+    }
+
     pub fn shape(&self, text: &str, px: f32) -> Shaped {
         let faces: Vec<Face> = self.faces.iter().map(|f| f.face()).collect();
         let mut x = 0.0;

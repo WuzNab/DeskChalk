@@ -2,13 +2,15 @@
 //! pushed to a layered window with UpdateLayeredWindow (per-pixel transparency).
 
 use tiny_skia::PixmapMut;
-use windows::Win32::Foundation::{COLORREF, HWND, POINT, SIZE};
+use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, AC_SRC_ALPHA,
     AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP,
     HDC, HGDIOBJ,
 };
-use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
+use windows::Win32::UI::WindowsAndMessaging::{
+    UpdateLayeredWindow, UpdateLayeredWindowIndirect, ULW_ALPHA, UPDATELAYEREDWINDOWINFO,
+};
 
 pub struct Surface {
     pub w: i32,
@@ -63,6 +65,52 @@ impl Surface {
         }
         dst.copy_from_slice(pixels);
         Some(s)
+    }
+
+    /// Copies `src` (`w` x `h`, tightly packed) into the bitmap at (`x`, `y`), clipped.
+    pub fn write_region(&mut self, x: i32, y: i32, w: i32, h: i32, src: &[u8]) {
+        let (sw, sh) = (self.w, self.h);
+        let x0 = x.max(0);
+        let x1 = (x + w).min(sw);
+        if x1 <= x0 {
+            return;
+        }
+        let len = ((x1 - x0) * 4) as usize;
+        let dst = self.pixels();
+        for row in 0..h {
+            let dy = y + row;
+            if dy < 0 || dy >= sh {
+                continue;
+            }
+            let s_off = ((row * w + (x0 - x)) * 4) as usize;
+            let d_off = ((dy * sw + x0) * 4) as usize;
+            dst[d_off..d_off + len].copy_from_slice(&src[s_off..s_off + len]);
+        }
+    }
+
+    /// Like `present`, but tells DWM only `dirty` (bitmap coordinates) changed.
+    pub fn present_dirty(&self, hwnd: HWND, pos: POINT, dirty: RECT) -> bool {
+        let size = SIZE { cx: self.w, cy: self.h };
+        let src = POINT::default();
+        let blend = BLENDFUNCTION {
+            BlendOp: AC_SRC_OVER as u8,
+            BlendFlags: 0,
+            SourceConstantAlpha: 255,
+            AlphaFormat: AC_SRC_ALPHA as u8,
+        };
+        let info = UPDATELAYEREDWINDOWINFO {
+            cbSize: std::mem::size_of::<UPDATELAYEREDWINDOWINFO>() as u32,
+            hdcDst: HDC::default(),
+            pptDst: &pos,
+            psize: &size,
+            hdcSrc: self.dc,
+            pptSrc: &src,
+            crKey: COLORREF(0),
+            pblend: &blend,
+            dwFlags: ULW_ALPHA,
+            prcDirty: &dirty,
+        };
+        unsafe { UpdateLayeredWindowIndirect(hwnd, &info).as_bool() }
     }
 
     pub fn pixels(&mut self) -> &mut [u8] {

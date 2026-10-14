@@ -15,3 +15,10 @@ jobs:
         run: cargo test --locked
       - name: Build release
         run: cargo build --release --locked
+      - name: Build setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q /DAppVersion=0.0.0 installer\DeskChalk.iss

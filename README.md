@@ -22,19 +22,28 @@ draw labeled zones on the desktop background, on the fly, and drag icons into th
 - **Boxes are just drawings.** They never hold, move, or touch your files. Icons stay normal desktop icons.
 - **Behind your icons.** Boxes live between the wallpaper and the icons, so everything still clicks and drags as usual.
 - **Snaps to the icon grid.** A dot grid matches your desktop icon spacing, so a box holds exactly *n × m* icons. Free-form works too.
+- **Titles on the line.** Titles sit in a gap on the box's border by default, so icons never cover them. Six positions on the line, nine inside.
+- **Colors mix.** Where boxes overlap, their colors blend (blue and red make purple) without getting darker.
+- **Make it yours.** Box color and background opacity, border color, opacity, width and style, corner roundness, title font, size and style, and dot color, size and opacity.
 - **Per monitor.** Each box belongs to the screen you drew it on and stays there, even after resolution or scaling changes.
-- **Lightweight.** One ~1 MB exe, about 6 MB of memory, zero CPU while idle. No background services, no hooks.
+- **Lightweight.** A ~1 MB app that uses almost no memory or CPU while idle. No background services, no hooks.
 
 ## Install
 
-1. Download **DeskChalk.exe** from the [latest release](https://github.com/WuzNab/DeskChalk/releases/latest).
-2. Run it and choose **Yes** to install. No admin rights needed; it installs just for you.
+1. Download **DeskChalk_Setup.exe** from the [latest release](https://github.com/WuzNab/DeskChalk/releases/latest).
+2. Run it and follow the wizard. No admin rights needed; it installs just for you. You can choose to:
+   - start DeskChalk when Windows starts (on by default)
+   - add it to the Start menu
+   - create a desktop shortcut
 3. Find the pencil icon in your tray (on Windows 11 it may be under the **^** overflow; drag it onto the taskbar to keep it visible).
 
 DeskChalk isn't code-signed yet, so Windows SmartScreen may say *"Windows protected your PC"*.
 Click **More info**, then **Run anyway**.
 
-DeskChalk starts with Windows by default. Turn that off with **Start with Windows** in the tray menu.
+**Updating:** run the newer `DeskChalk_Setup.exe`. It closes DeskChalk, updates it in place and keeps your boxes.
+Choose **Clean reinstall** on the first page if you'd rather start fresh (this deletes all boxes and settings).
+
+**Portable:** prefer not to install? Download **DeskChalk_Portable.exe** and run it from anywhere.
 
 ## Use it
 
@@ -45,7 +54,7 @@ DeskChalk starts with Windows by default. Turn that off with **Start with Window
 | Drag on empty space | Draw a box (you'll be asked for a title) |
 | Drag a box / its edges | Move / resize it |
 | Double-click a box, or **F2** | Rename it |
-| Right-click a box | Color, title position, size and style, corner roundness, border, fill, duplicate, delete |
+| Right-click a box | Color, background opacity, border, border color and opacity, corner roundness, title position, size and style, duplicate, delete |
 | Hold **Alt** while dragging | Toggle snapping (free-form or grid) |
 | **Arrow keys** | Nudge the selected box (one icon slot; in free-form 1 px, or 10 px with Shift) |
 | **Ctrl+Z** / **Ctrl+Y** | Undo / redo |
@@ -54,8 +63,9 @@ DeskChalk starts with Windows by default. Turn that off with **Start with Window
 
 Then drag your icons into the boxes like you normally would.
 
-Everything else lives in the **tray menu**: show or hide boxes, grid view (dots on the desktop), dot color/size/opacity,
-the default style for new boxes, title font, desktop icon size, auto arrange and align to grid, start with Windows, and uninstall.
+Everything else lives in the **tray menu**: show or hide boxes, color mixing, grid view (dots on the desktop), dot color, size, opacity
+and the dots-move-away-from-the-mouse effect, the default style for new boxes, title font, desktop icon size, auto arrange and
+align to grid, start with Windows, and uninstall. Menus stay open while you change settings, so you can adjust several in a row.
 
 > **Tip:** turn **off** *Auto arrange icons* (DeskChalk offers to do this the first time, or use
 > *Desktop icons* in the tray menu). Otherwise Windows pulls your icons back into a column.
@@ -63,9 +73,12 @@ the default style for new boxes, title font, desktop icon size, auto arrange and
 
 ## Uninstall
 
-Tray menu → **Uninstall DeskChalk…**, or **Settings → Apps → DeskChalk → Uninstall**.
-This removes the app, its Start menu entry, its startup entry, and your boxes and settings. Nothing is left behind,
+Tray menu → **Uninstall DeskChalk…**, **Settings → Apps → Installed apps → DeskChalk**, or **Control Panel → Programs and Features**.
+This removes the app, its shortcuts, its startup entry, and your boxes and settings. Nothing is left behind,
 and your desktop icons are not touched.
+
+The portable version: tray menu → **Remove DeskChalk (portable)…** deletes its boxes, settings and startup entry;
+then delete `DeskChalk_Portable.exe` yourself.
 
 ## Requirements
 
@@ -88,13 +101,12 @@ Linux support planned.
 
 | Option | Effect |
 | --- | --- |
-| `--install` | Install for the current user without asking (`--no-launch` to not start it) |
-| `--uninstall` | Uninstall (`--quiet` to skip the questions) |
-| `--portable` | Run without installing |
-| `--edit` | Start in drawing mode |
+| `--edit` | Start in drawing mode (or switch the running DeskChalk into it) |
 | `--quit` | Close the running DeskChalk |
 | `--diag` | Print what DeskChalk detects (desktop windows, monitors, icon grid) |
 | `--log` | Write a log file |
+
+The setup supports the usual Inno Setup switches, e.g. `DeskChalk_Setup.exe /SILENT` for an unattended install.
 
 </details>
 
@@ -106,8 +118,9 @@ Install [Rust](https://rustup.rs) (MSVC toolchain; Visual Studio Build Tools pro
 cargo build --release
 ```
 
-The exe is `target\release\DeskChalk.exe`. Run it with `--portable` to try it without installing.
-Push a `v*` tag to have GitHub Actions build a release.
+The app is `target\release\DeskChalk.exe` and runs from there without installing. To build the setup wizard,
+install [Inno Setup 6](https://jrsoftware.org/isinfo.php) and run `iscc /DAppVersion=0.2.0 installer\DeskChalk.iss`.
+Push a `v*` tag to have GitHub Actions build both and publish a release.
 
 ## Support
 

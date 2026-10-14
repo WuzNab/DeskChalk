@@ -17,6 +17,7 @@ mod menu;
 mod monitors;
 mod reg;
 mod shell;
+mod sticky;
 mod surface;
 mod title;
 mod tray;
@@ -25,7 +26,7 @@ use crate::config;
 use crate::editor::{self, Editor, Handle, Hit, Outcome};
 use crate::geom::{Pt, Rect};
 use crate::grid::{self, Grid};
-use crate::model::{self, Config, DotColor, Rgb, StyleCmd, Zone};
+use crate::model::{self, Config, Rgb, StyleCmd, Zone};
 use crate::render::{self, EditLayer, GridLayer, Painter, Scene, ZoneItem};
 use crate::text::Fonts;
 use desktop::Desktop;
@@ -47,13 +48,14 @@ use windows::Win32::Foundation::{
 use windows::Win32::Graphics::Gdi::{ClientToScreen, ScreenToClient};
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcess, SetProcessWorkingSetSize};
 use windows::Win32::UI::HiDpi::{SetThreadDpiHostingBehavior, DPI_HOSTING_BEHAVIOR_MIXED};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetDoubleClickTime, GetKeyState, RegisterHotKey, ReleaseCapture, SetCapture, UnregisterHotKey,
-    MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_D, VK_DELETE, VK_DOWN,
+    GetDoubleClickTime, GetKeyState, RegisterHotKey, ReleaseCapture, SetCapture, TrackMouseEvent,
+    UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, TME_LEAVE, TRACKMOUSEEVENT, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_D, VK_DELETE, VK_DOWN,
     VK_ESCAPE, VK_F2, VK_LEFT, VK_MENU, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP, VK_Y, VK_Z,
 };
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Shell::{FWF_AUTOARRANGE, FWF_SNAPTOGRID, NIN_SELECT};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -77,6 +79,9 @@ const T_SAVE: usize = 3;
 const T_TRAY_CLICK: usize = 4;
 const T_REFRESH: usize = 5;
 const T_FOCUS: usize = 6;
+const T_TRIM: usize = 7;
+const T_ANIM: usize = 8;
+const ANIM_MS: u32 = 15;
 
 const HEALTH_MS: u32 = 2000;
 const HOTKEY_ID: i32 = 1;
@@ -119,20 +124,8 @@ pub fn main() {
         diag::run();
         return;
     }
-    if has("--uninstall") {
-        install::run_uninstaller(has("--quiet"));
-        return;
-    }
     if has("--quit") {
         install::signal_running(CMD_QUIT);
-        return;
-    }
-    if has("--install") {
-        // Silent per-user install (no questions), e.g. for scripted setups.
-        install::silent_install(!has("--no-launch"));
-        return;
-    }
-    if !has("--portable") && install::startup_check() == install::Startup::Exit {
         return;
     }
     // One instance per user session; launching again opens edit mode in the running one.
@@ -141,12 +134,11 @@ pub fn main() {
         install::signal_running(CMD_EDIT);
         return;
     }
-    run(RunOpts { first_run: has("--first-run"), edit: has("--edit") });
+    run(RunOpts { edit: has("--edit") });
 }
 
 #[derive(Clone, Copy)]
 struct RunOpts {
-    first_run: bool,
     edit: bool,
 }
 
@@ -243,16 +235,33 @@ struct Overlay {
     offset: Pt,
 }
 
+#[derive(Clone)]
 enum Target {
     Global,
     Zone(u64),
     Monitor(String),
 }
 
+/// Which menu is open (to refresh its check marks while it stays open).
+#[derive(Clone)]
+enum MenuKind {
+    Tray,
+    Zone(u64),
+    Canvas(String),
+}
+
+#[derive(Clone, Copy)]
+enum ColorSlot {
+    Box,
+    Border,
+    Dots,
+}
+
 enum Follow {
     Nothing,
-    CustomColor { initial: Rgb, zone: Option<u64> },
-    ConfirmUninstall,
+    /// `zone` None means the style for new boxes.
+    CustomColor { initial: Rgb, slot: ColorSlot, zone: Option<u64> },
+    Uninstall,
     ConfirmDeleteAll(String),
 }
 
@@ -283,6 +292,63 @@ struct App {
     comp: Option<comp::Compositor>,
     /// The usage hint shows until the first click in an edit session.
     show_hint: bool,
+    /// Overlay index and mouse position the dots are currently drifting away from.
+    repel: Option<(usize, Pt)>,
+    /// How far the drift has eased in (0..1), where it's heading, and the last animation tick.
+    repel_strength: f32,
+    repel_target: f32,
+    anim_tick: Option<Instant>,
+    /// Overlay we asked to be told about the mouse leaving.
+    tracking_leave: Option<HWND>,
+}
+
+/// What the edit overlays are drawn from (borrowed from the App).
+struct OverlayView<'a> {
+    cfg: &'a Config,
+    editor: &'a Editor,
+    title_fonts: Option<&'a Fonts>,
+    ui_fonts: Option<&'a Fonts>,
+    hint: bool,
+    snap: bool,
+    mouse: Pt,
+}
+
+fn overlay_scene<'a>(v: &OverlayView<'a>, mon: &'a Monitor, origin: Pt, repel: Option<(Pt, f32)>) -> Scene<'a> {
+    let size = mon.size();
+    let drag = v.editor.drag.as_ref().filter(|d| d.active && d.monitor == mon.key);
+    let zones = v
+        .cfg
+        .zones
+        .iter()
+        .filter(|z| z.monitor == mon.key)
+        .map(|z| ZoneItem {
+            zone: z,
+            rect: v.editor.display_rect(z, size),
+            selected: v.editor.selected == Some(z.id) && drag.is_none_or(|d| !d.is_create()),
+        })
+        .collect();
+    Scene {
+        origin,
+        scale: mon.scale(),
+        painter: Painter { swap_rb: true },
+        title_fonts: v.title_fonts,
+        ui_fonts: v.ui_fonts,
+        grid: Some(GridLayer {
+            grid: &mon.grid,
+            color: v.cfg.grid.color,
+            radius: v.cfg.grid.size,
+            alpha: (v.cfg.grid.opacity as f32 / 100.0).max(0.3),
+            repel,
+        }),
+        zones,
+        edit: Some(EditLayer {
+            hint: v.hint.then_some(HINT),
+            label: drag.map(|d| (size_label(&d.rect, &mon.grid, v.snap), v.mouse)),
+            draft: drag.filter(|d| d.is_create()).map(|d| (d.rect, &v.cfg.defaults)),
+        }),
+        mix_colors: v.cfg.mix_colors,
+        bounds: Rect::new(0.0, 0.0, size.0, size.1),
+    }
 }
 
 fn key_down(vk: VIRTUAL_KEY) -> bool {
@@ -406,6 +472,11 @@ impl App {
             uninstalling: false,
             comp: None,
             show_hint: true,
+            repel: None,
+            repel_strength: 0.0,
+            repel_target: 0.0,
+            anim_tick: None,
+            tracking_leave: None,
         }
     }
 
@@ -415,7 +486,7 @@ impl App {
         self.attach();
         self.schedule(T_HEALTH, HEALTH_MS);
         unsafe {
-            if self.opts.first_run || !self.cfg.welcomed {
+            if !self.cfg.welcomed {
                 let _ = PostMessageW(Some(self.hwnd), WM_WELCOME, WPARAM(0), LPARAM(0));
             }
             if self.opts.edit {
@@ -629,7 +700,9 @@ impl App {
             let show_grid = self.cfg.grid.show_on_desktop;
             let mut bounds: Option<Rect> = None;
             for z in &zones {
-                bounds = Some(bounds.map_or(z.rect, |b| b.union(&z.rect)));
+                // Titles on the border line reach a little outside the box.
+                let r = z.rect.inset(-(z.zone.style.title_size * 0.9 + 6.0) * mon.scale());
+                bounds = Some(bounds.map_or(r, |b| b.union(&r)));
             }
             if show_grid {
                 bounds = Some(bounds.map_or(mon.grid.area, |b| b.union(&mon.grid.area)));
@@ -669,12 +742,15 @@ impl App {
                 ui_fonts: None,
                 grid: show_grid.then_some(GridLayer {
                     grid: &mon.grid,
-                    color: self.cfg.grid.color.rgb(),
+                    color: self.cfg.grid.color,
                     radius: self.cfg.grid.size,
                     alpha: self.cfg.grid.opacity as f32 / 100.0,
+                    repel: None,
                 }),
                 zones,
                 edit: None,
+                mix_colors: self.cfg.mix_colors,
+                bounds: full,
             };
             if let Some(mut pm) = tiny_skia::PixmapMut::from_bytes(&mut pixels, bw as u32, bh as u32) {
                 render::draw(&mut pm, &scene);
@@ -708,6 +784,16 @@ impl App {
         self.layers = keep;
         // Fonts are only kept around while editing.
         self.title_fonts = None;
+        self.schedule(T_TRIM, 3000);
+    }
+
+    /// Hands memory that is no longer needed (bitmaps, fonts) back to Windows.
+    fn trim_memory(&self) {
+        if !self.editing {
+            unsafe {
+                let _ = SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+            }
+        }
     }
 
     fn orphan_count(&self) -> usize {
@@ -770,6 +856,11 @@ impl App {
                     self.focus_overlay();
                 }
             }
+            T_TRIM => {
+                self.kill(T_TRIM);
+                self.trim_memory();
+            }
+            T_ANIM => self.anim_step(),
             _ => {}
         }
     }
@@ -873,6 +964,10 @@ impl App {
         self.finish_title_edit(true);
         self.editor.cancel();
         self.editor.selected = None;
+        self.repel = None;
+        self.repel_strength = 0.0;
+        self.anim_tick = None;
+        self.kill(T_ANIM);
         for ov in self.overlays.drain(..) {
             unsafe {
                 let _ = DestroyWindow(ov.hwnd);
@@ -920,48 +1015,25 @@ impl App {
     }
 
     fn render_overlays(&mut self, only: Option<usize>) {
-        let painter = Painter { swap_rb: true };
         let snap = self.snapping();
-        let title_fonts = self.title_fonts.as_ref().map(|(_, f)| f);
-        let ui_fonts = self.ui_fonts.as_ref();
-        let grid_alpha = (self.cfg.grid.opacity as f32 / 100.0).max(0.45);
+        let repel = self.repel;
+        let strength = self.repel_strength;
+        let view = OverlayView {
+            cfg: &self.cfg,
+            editor: &self.editor,
+            title_fonts: self.title_fonts.as_ref().map(|(_, f)| f),
+            ui_fonts: self.ui_fonts.as_ref(),
+            hint: self.show_hint,
+            snap,
+            mouse: self.mouse,
+        };
         for (i, ov) in self.overlays.iter_mut().enumerate() {
             if only.is_some_and(|o| o != i) {
                 continue;
             }
-            let Some(mon) = self.monitors.iter().find(|m| m.key == ov.key) else { continue };
-            let size = mon.size();
-            let drag = self.editor.drag.as_ref().filter(|d| d.active && d.monitor == mon.key);
-            let zones = self
-                .cfg
-                .zones
-                .iter()
-                .filter(|z| z.monitor == mon.key)
-                .map(|z| ZoneItem {
-                    zone: z,
-                    rect: self.editor.display_rect(z, size),
-                    selected: self.editor.selected == Some(z.id) && drag.is_none_or(|d| !d.is_create()),
-                })
-                .collect();
-            let scene = Scene {
-                origin: ov.offset,
-                scale: mon.scale(),
-                painter,
-                title_fonts,
-                ui_fonts,
-                grid: Some(GridLayer {
-                    grid: &mon.grid,
-                    color: self.cfg.grid.color.rgb(),
-                    radius: self.cfg.grid.size,
-                    alpha: grid_alpha,
-                }),
-                zones,
-                edit: Some(EditLayer {
-                    hint: self.show_hint.then_some(HINT),
-                    label: drag.map(|d| (size_label(&d.rect, &mon.grid, snap), self.mouse)),
-                    draft: drag.filter(|d| d.is_create()).map(|d| (d.rect, &self.cfg.defaults)),
-                }),
-            };
+            let Some(mon) = find_monitor(&self.monitors, &ov.key) else { continue };
+            let at = repel.filter(|(j, _)| *j == i).map(|(_, p)| (p, strength));
+            let scene = overlay_scene(&view, mon, ov.offset, at);
             render::clear(ov.surface.pixels(), EDIT_DIM);
             if let Some(mut pm) = ov.surface.pixmap() {
                 render::draw(&mut pm, &scene);
@@ -970,6 +1042,106 @@ impl App {
             if let Err(e) = ov.surface.present(ov.hwnd, Some(pos)) {
                 log!("drawing the editor failed: {e}");
             }
+        }
+    }
+
+    /// Redraws only `region` (monitor coordinates) of one overlay, e.g. around the mouse.
+    fn render_overlay_region(&mut self, i: usize, region: Rect) {
+        let snap = self.snapping();
+        let strength = self.repel_strength;
+        let at = self.repel.filter(|(j, _)| *j == i).map(|(_, p)| (p, strength));
+        let view = OverlayView {
+            cfg: &self.cfg,
+            editor: &self.editor,
+            title_fonts: self.title_fonts.as_ref().map(|(_, f)| f),
+            ui_fonts: self.ui_fonts.as_ref(),
+            hint: self.show_hint,
+            snap,
+            mouse: self.mouse,
+        };
+        let Some(ov) = self.overlays.get_mut(i) else { return };
+        let Some(mon) = find_monitor(&self.monitors, &ov.key) else { return };
+        let bitmap = Rect::new(0.0, 0.0, ov.surface.w as f32, ov.surface.h as f32);
+        let Some(local) = region.offset(-ov.offset.x, -ov.offset.y).intersect(&bitmap) else { return };
+        let (x, y, w, h) = local.round_out();
+        let (w, h) = (w.min(ov.surface.w - x), h.min(ov.surface.h - y));
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        render::clear(&mut buf, EDIT_DIM);
+        let scene = overlay_scene(&view, mon, Pt::new(ov.offset.x + x as f32, ov.offset.y + y as f32), at);
+        if let Some(mut pm) = tiny_skia::PixmapMut::from_bytes(&mut buf, w as u32, h as u32) {
+            render::draw(&mut pm, &scene);
+        }
+        ov.surface.write_region(x, y, w, h, &buf);
+        let pos = POINT { x: ov.rect.left, y: ov.rect.top };
+        ov.surface.present_dirty(ov.hwnd, pos, RECT { left: x, top: y, right: x + w, bottom: y + h });
+    }
+
+    fn overlay_scale(&self, i: usize) -> f32 {
+        self.overlay_monitor(i).map_or(1.0, |m| m.scale())
+    }
+
+    /// Moves the dots' repel point to `p` on overlay `i` and eases the effect in.
+    fn set_repel(&mut self, i: usize, p: Pt) {
+        if let Some((j, q)) = self.repel {
+            if j != i {
+                // The mouse moved to another screen: let the old one settle at once.
+                self.repel = None;
+                let sc = self.overlay_scale(j);
+                self.render_overlay_region(j, render::repel_bounds(q, sc));
+                self.repel_strength = 0.0;
+            }
+        }
+        let sc = self.overlay_scale(i);
+        let prev = self.repel.map(|(_, q)| q);
+        self.repel = Some((i, p));
+        self.repel_target = 1.0;
+        self.start_anim();
+        let dirty = match prev {
+            Some(q) => render::repel_bounds(q, sc).union(&render::repel_bounds(p, sc)),
+            None => render::repel_bounds(p, sc),
+        };
+        self.render_overlay_region(i, dirty);
+    }
+
+    fn overlay_leave(&mut self, hwnd: HWND) {
+        self.tracking_leave = None;
+        if self.overlay_index(hwnd).is_some() && self.repel.is_some() {
+            self.repel_target = 0.0;
+            self.start_anim();
+        }
+    }
+
+    fn start_anim(&mut self) {
+        if self.anim_tick.is_none() && (self.repel_strength - self.repel_target).abs() > 0.001 {
+            self.anim_tick = Some(Instant::now());
+            self.schedule(T_ANIM, ANIM_MS);
+        }
+    }
+
+    /// One frame of the dots easing toward (or away from) the mouse.
+    fn anim_step(&mut self) {
+        let now = Instant::now();
+        let dt = self.anim_tick.map_or(0.016, |t| (now - t).as_secs_f32()).min(0.1);
+        self.anim_tick = Some(now);
+        let k = 1.0 - (-dt / 0.06).exp();
+        self.repel_strength += (self.repel_target - self.repel_strength) * k;
+        let done = (self.repel_strength - self.repel_target).abs() < 0.01;
+        if done {
+            self.repel_strength = self.repel_target;
+        }
+        if let Some((i, p)) = self.repel {
+            let sc = self.overlay_scale(i);
+            self.render_overlay_region(i, render::repel_bounds(p, sc));
+            if done && self.repel_target == 0.0 {
+                self.repel = None;
+            }
+        }
+        if done || self.repel.is_none() || !self.editing {
+            self.kill(T_ANIM);
+            self.anim_tick = None;
         }
     }
 
@@ -990,6 +1162,8 @@ impl App {
     fn overlay_down(&mut self, hwnd: HWND, x: i32, y: i32) {
         self.finish_title_edit(true);
         self.show_hint = false;
+        self.repel = None;
+        self.repel_strength = 0.0;
         let Some(i) = self.overlay_index(hwnd) else { return };
         let p = self.overlay_point(i, x, y);
         self.mouse = p;
@@ -1004,6 +1178,21 @@ impl App {
         let p = self.overlay_point(i, x, y);
         self.mouse = p;
         if self.editor.drag.is_none() {
+            if self.cfg.grid.repel {
+                if self.tracking_leave != Some(hwnd) {
+                    let mut tme = TRACKMOUSEEVENT {
+                        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    };
+                    unsafe {
+                        let _ = TrackMouseEvent(&mut tme);
+                    }
+                    self.tracking_leave = Some(hwnd);
+                }
+                self.set_repel(i, p);
+            }
             return;
         }
         let snap = self.snapping();
@@ -1158,7 +1347,18 @@ impl App {
         true
     }
 
-    fn overlay_menu(&mut self, hwnd: HWND, x: i32, y: i32) -> Option<(Menu, Target)> {
+    fn canvas_menu(&self, key: &str) -> Menu {
+        let any_here = self.cfg.zones.iter().any(|z| z.monitor == key);
+        menu::canvas_menu(
+            self.cfg.snap,
+            self.cfg.grid.show_on_desktop,
+            self.editor.can_undo(),
+            self.editor.can_redo(),
+            any_here,
+        )
+    }
+
+    fn overlay_menu(&mut self, hwnd: HWND, x: i32, y: i32) -> Option<(Menu, Target, MenuKind)> {
         self.finish_title_edit(true);
         self.editor.cancel();
         let i = self.overlay_index(hwnd)?;
@@ -1171,19 +1371,11 @@ impl App {
             Hit::Body(id) | Hit::Handle(id, _) => {
                 self.editor.selected = Some(id);
                 let z = self.cfg.zones.iter().find(|z| z.id == id)?;
-                (menu::zone_menu(&z.style, scale), Target::Zone(id))
+                (menu::zone_menu(&z.style, scale), Target::Zone(id), MenuKind::Zone(id))
             }
             Hit::None => {
                 self.editor.selected = None;
-                let any_here = self.cfg.zones.iter().any(|z| z.monitor == key);
-                let m = menu::canvas_menu(
-                    self.cfg.snap,
-                    self.cfg.grid.show_on_desktop,
-                    self.editor.can_undo(),
-                    self.editor.can_redo(),
-                    any_here,
-                );
-                (m, Target::Monitor(key))
+                (self.canvas_menu(&key), Target::Monitor(key.clone()), MenuKind::Canvas(key))
             }
         };
         self.render_overlays(None);
@@ -1199,12 +1391,19 @@ impl App {
         let r = editor::zone_rect(z, mon.size());
         let h = ((15.0 * 1.45 + 16.0) * sc).round();
         let w = (r.w - 16.0 * sc).clamp(200.0 * sc, 560.0 * sc).round();
-        let y = match z.style.title_v {
-            model::VAlign::Top => r.y + 6.0 * sc,
-            model::VAlign::Middle => r.y + (r.h - h) / 2.0,
-            model::VAlign::Bottom => r.bottom() - 6.0 * sc - h,
+        let y = match (z.style.title_on_border, z.style.title_v) {
+            (true, model::VAlign::Bottom) => r.bottom() - h / 2.0,
+            (true, _) => r.y - h / 2.0,
+            (false, model::VAlign::Top) => r.y + 6.0 * sc,
+            (false, model::VAlign::Middle) => r.y + (r.h - h) / 2.0,
+            (false, model::VAlign::Bottom) => r.bottom() - 6.0 * sc - h,
         };
-        let x = mon.rect.left + (r.x + 8.0 * sc).round() as i32;
+        let x = match z.style.title_h {
+            model::HAlign::Left => r.x + 8.0 * sc,
+            model::HAlign::Center => r.x + (r.w - w) / 2.0,
+            model::HAlign::Right => r.right() - 8.0 * sc - w,
+        };
+        let x = mon.rect.left + x.round() as i32;
         let y = mon.rect.top + y.round() as i32;
         let rect = RECT { left: x, top: y, right: x + w as i32, bottom: y + h as i32 };
         let title = z.title.clone();
@@ -1247,19 +1446,33 @@ impl App {
         m.item(cmd::EDIT, &format!("{edit}{hk}"));
         m.set_default(cmd::EDIT);
         m.check(cmd::SHOW_ZONES, "Show boxes", self.cfg.show_zones);
+        m.check(cmd::MIX_COLORS, "Mix colors where boxes overlap", self.cfg.mix_colors);
         m.sep();
         m.check(cmd::GRID_SHOW, "Grid view (dots on the desktop)", self.cfg.grid.show_on_desktop);
         m.check(cmd::SNAP, "Snap boxes to the icon grid", self.cfg.snap);
 
         let g = &self.cfg.grid;
         let mut dots = Menu::new();
-        dots.radio(cmd::GRID_WHITE, "White dots", g.color == DotColor::White);
-        dots.radio(cmd::GRID_BLACK, "Black dots", g.color == DotColor::Black);
+        dots.check(cmd::GRID_SHOW, "Always show dots on the desktop", g.show_on_desktop);
+        dots.check(cmd::GRID_REPEL, "Dots move away from the mouse (while drawing)", g.repel);
         dots.sep();
+        dots.heading("Color");
+        for (i, (name, c)) in model::DOT_COLORS.iter().enumerate() {
+            dots.color(cmd::DOT_COLOR + i as u32, name, *c, *c == g.color, scale);
+        }
+        let custom = !model::DOT_COLORS.iter().any(|(_, c)| *c == g.color);
+        if custom {
+            dots.color(cmd::DOT_CUSTOM, "Custom color…", g.color, true, scale);
+        } else {
+            dots.radio(cmd::DOT_CUSTOM, "Custom color…", false);
+        }
+        dots.sep();
+        dots.heading("Size");
         for (i, (name, v)) in model::DOT_SIZES.iter().enumerate() {
             dots.radio(cmd::GRID_SIZE + i as u32, name, (v - g.size).abs() < 0.01);
         }
         dots.sep();
+        dots.heading("Opacity");
         for (i, (name, v)) in model::DOT_OPACITY.iter().enumerate() {
             dots.radio(cmd::GRID_OPACITY + i as u32, name, *v == g.opacity);
         }
@@ -1304,7 +1517,11 @@ impl App {
         m.sep();
         m.item(cmd::SUPPORT, "Support DeskChalk on Ko-fi");
         m.item(cmd::ABOUT, &format!("About DeskChalk {VERSION}"));
-        m.item(cmd::UNINSTALL, "Uninstall DeskChalk…");
+        if install::uninstaller().is_some() {
+            m.item(cmd::UNINSTALL, "Uninstall DeskChalk…");
+        } else {
+            m.item(cmd::UNINSTALL, "Remove DeskChalk (portable)…");
+        }
         m.item(cmd::EXIT, "Exit");
         m
     }
@@ -1339,9 +1556,20 @@ impl App {
                 self.cfg.snap = !self.cfg.snap;
                 self.save_soon();
             }
-            cmd::GRID_WHITE | cmd::GRID_BLACK => {
-                self.cfg.grid.color = if id == cmd::GRID_WHITE { DotColor::White } else { DotColor::Black };
+            cmd::MIX_COLORS => {
+                self.cfg.mix_colors = !self.cfg.mix_colors;
                 self.changed();
+            }
+            cmd::GRID_REPEL => {
+                self.cfg.grid.repel = !self.cfg.grid.repel;
+                self.save_soon();
+            }
+            _ if in_range(cmd::DOT_COLOR, model::DOT_COLORS.len()) => {
+                self.cfg.grid.color = model::DOT_COLORS[(id - cmd::DOT_COLOR) as usize].1;
+                self.changed();
+            }
+            cmd::DOT_CUSTOM => {
+                return Follow::CustomColor { initial: self.cfg.grid.color, slot: ColorSlot::Dots, zone: None };
             }
             _ if in_range(cmd::GRID_SIZE, model::DOT_SIZES.len()) => {
                 self.cfg.grid.size = model::DOT_SIZES[(id - cmd::GRID_SIZE) as usize].1;
@@ -1385,7 +1613,7 @@ impl App {
             }
             cmd::SUPPORT => shell::open_url(SUPPORT_URL),
             cmd::ABOUT => shell::open_url(REPO_URL),
-            cmd::UNINSTALL => return Follow::ConfirmUninstall,
+            cmd::UNINSTALL => return Follow::Uninstall,
             cmd::EXIT => unsafe {
                 let _ = DestroyWindow(self.hwnd);
             },
@@ -1471,7 +1699,11 @@ impl App {
                 match StyleCmd::decode(id - cmd::STYLE_ZONE) {
                     Some(StyleCmd::CustomColor) => {
                         let initial = self.zone_mut(z).map_or(model::PASTEL_GREEN, |zz| zz.style.color);
-                        return Follow::CustomColor { initial, zone: Some(z) };
+                        return Follow::CustomColor { initial, slot: ColorSlot::Box, zone: Some(z) };
+                    }
+                    Some(StyleCmd::CustomBorderColor) => {
+                        let initial = self.zone_mut(z).map_or(model::PASTEL_GREEN, |zz| zz.style.line_color());
+                        return Follow::CustomColor { initial, slot: ColorSlot::Border, zone: Some(z) };
                     }
                     Some(sc) => {
                         self.editor.checkpoint(&self.cfg.zones);
@@ -1486,7 +1718,11 @@ impl App {
             _ if in_range(cmd::STYLE_DEFAULT, model::STYLE_SPAN as usize) => {
                 match StyleCmd::decode(id - cmd::STYLE_DEFAULT) {
                     Some(StyleCmd::CustomColor) => {
-                        return Follow::CustomColor { initial: self.cfg.defaults.color, zone: None };
+                        return Follow::CustomColor { initial: self.cfg.defaults.color, slot: ColorSlot::Box, zone: None };
+                    }
+                    Some(StyleCmd::CustomBorderColor) => {
+                        let initial = self.cfg.defaults.line_color();
+                        return Follow::CustomColor { initial, slot: ColorSlot::Border, zone: None };
                     }
                     Some(sc) => {
                         self.cfg.defaults.apply(sc);
@@ -1500,18 +1736,27 @@ impl App {
         Follow::Nothing
     }
 
-    fn apply_custom_color(&mut self, c: Rgb, zone: Option<u64>, custom: Vec<Rgb>) {
+    fn apply_custom_color(&mut self, c: Rgb, slot: ColorSlot, zone: Option<u64>, custom: Vec<Rgb>) {
         self.cfg.custom_colors = custom;
-        match zone {
-            Some(z) => {
+        let set = |style: &mut model::ZoneStyle| match slot {
+            ColorSlot::Box => style.color = c,
+            ColorSlot::Border => style.border_color = Some(c),
+            ColorSlot::Dots => {}
+        };
+        match (slot, zone) {
+            (ColorSlot::Dots, _) => {
+                self.cfg.grid.color = c;
+                self.changed();
+            }
+            (_, Some(z)) => {
                 self.editor.checkpoint(&self.cfg.zones);
                 if let Some(zz) = self.zone_mut(z) {
-                    zz.style.color = c;
+                    set(&mut zz.style);
                 }
                 self.changed();
             }
-            None => {
-                self.cfg.defaults.color = c;
+            (_, None) => {
+                set(&mut self.cfg.defaults);
                 self.save_soon();
             }
         }
@@ -1524,7 +1769,7 @@ impl App {
         self.changed();
     }
 
-    fn uninstall(&mut self) {
+    fn remove_portable(&mut self) {
         if self.editing {
             self.exit_edit();
         }
@@ -1533,11 +1778,7 @@ impl App {
         self.kill(T_HEALTH);
         self.destroy_layers();
         self.tray.remove();
-        let pending = install::uninstall_files();
-        dialogs::info("DeskChalk has been uninstalled. Thanks for trying it!");
-        if let Some(dir) = pending {
-            install::schedule_delete(&dir);
-        }
+        install::remove_portable_traces();
         unsafe {
             let _ = DestroyWindow(self.hwnd);
         }
@@ -1551,12 +1792,12 @@ fn run_command(id: u32, target: Target) {
     let follow = with_app(|a| a.on_command(id, &target)).unwrap_or(Follow::Nothing);
     match follow {
         Follow::Nothing => {}
-        Follow::CustomColor { initial, zone } => {
+        Follow::CustomColor { initial, slot, zone } => {
             let Some((owner, custom)) = with_app(|a| (a.modal_owner(), a.cfg.custom_colors.clone())) else {
                 return;
             };
             if let Some((c, custom)) = dialogs::choose_color(owner, initial, &custom) {
-                with_app(|a| a.apply_custom_color(c, zone, custom));
+                with_app(|a| a.apply_custom_color(c, slot, zone, custom));
             }
             with_app(|a| {
                 if a.editing {
@@ -1564,11 +1805,15 @@ fn run_command(id: u32, target: Target) {
                 }
             });
         }
-        Follow::ConfirmUninstall => {
+        Follow::Uninstall => {
+            // Installed copy: the setup's uninstaller asks, closes DeskChalk and removes everything.
+            if install::launch_uninstaller() {
+                return;
+            }
             let owner = with_app(|a| a.modal_owner()).flatten();
-            let q = "Uninstall DeskChalk?\n\nThis removes DeskChalk, its startup entry, and all of your boxes and settings. Your desktop icons are not touched.";
+            let q = "Remove DeskChalk?\n\nThis deletes all of your boxes and settings and the startup entry, then closes DeskChalk. Delete DeskChalk_Portable.exe yourself afterwards. Your desktop icons are not touched.";
             if dialogs::ask(owner, q) {
-                with_app(|a| a.uninstall());
+                with_app(|a| a.remove_portable());
             }
         }
         Follow::ConfirmDeleteAll(key) => {
@@ -1580,13 +1825,27 @@ fn run_command(id: u32, target: Target) {
     }
 }
 
+/// A fresh copy of an open menu, to refresh its check marks after a sticky click.
+fn rebuild_menu(kind: &MenuKind) -> Option<Menu> {
+    with_app(|a| match kind {
+        MenuKind::Tray => Some(a.tray_menu()),
+        MenuKind::Zone(id) => {
+            let z = a.cfg.zones.iter().find(|z| z.id == *id)?;
+            let scale = find_monitor(&a.monitors, &z.monitor).map_or(1.0, |m| m.scale());
+            Some(menu::zone_menu(&z.style, scale))
+        }
+        MenuKind::Canvas(key) => Some(a.canvas_menu(key)),
+    })
+    .flatten()
+}
+
 fn show_tray_menu(hwnd: HWND) {
     let Some(m) = with_app(|a| a.tray_menu()) else { return };
     unsafe {
         let _ = SetForegroundWindow(hwnd);
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
-        let id = m.track(hwnd, pt.x, pt.y);
+        let id = sticky::track(&m, hwnd, pt.x, pt.y, Target::Global, MenuKind::Tray);
         let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
         drop(m);
         if id != 0 {
@@ -1732,17 +1991,21 @@ unsafe extern "system" fn overlay_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             with_app(|a| a.overlay_capture_lost());
             return LRESULT(0);
         }
+        WM_MOUSELEAVE => {
+            with_app(|a| a.overlay_leave(hwnd));
+            return LRESULT(0);
+        }
         WM_LBUTTONDBLCLK => {
             with_app(|a| a.overlay_double_click(hwnd, x, y));
             return LRESULT(0);
         }
         WM_RBUTTONUP => {
-            if let Some((m, target)) = with_app(|a| a.overlay_menu(hwnd, x, y)).flatten() {
+            if let Some((m, target, kind)) = with_app(|a| a.overlay_menu(hwnd, x, y)).flatten() {
                 let mut pt = POINT { x, y };
                 unsafe {
                     let _ = ClientToScreen(hwnd, &mut pt);
                 }
-                let id = m.track(hwnd, pt.x, pt.y);
+                let id = sticky::track(&m, hwnd, pt.x, pt.y, target.clone(), kind);
                 drop(m);
                 if id != 0 {
                     run_command(id, target);

@@ -1,19 +1,19 @@
 //! Explorer automation through documented COM interfaces: desktop icon layout and size,
-//! auto-arrange flags, minimize-all, shortcuts, known folders and opening links.
+//! auto-arrange flags, minimize-all, known folders and opening links.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use windows::core::{Interface, GUID, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HWND, POINT, S_OK};
 use windows::Win32::Graphics::Gdi::MapWindowPoints;
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoTaskMemFree, IPersistFile, IServiceProvider, CLSCTX_ALL,
+    CoCreateInstance, CoTaskMemFree, IServiceProvider, CLSCTX_ALL,
     CLSCTX_INPROC_SERVER,
 };
 use windows::Win32::System::Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_I4};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    IEnumIDList, IFolderView2, IShellBrowser, IShellDispatch, IShellLinkW, IShellWindows,
-    SHGetKnownFolderPath, Shell, ShellExecuteW, ShellLink, ShellWindows, CSIDL_DESKTOP,
+    IEnumIDList, IFolderView2, IShellBrowser, IShellDispatch, IShellWindows,
+    SHGetKnownFolderPath, Shell, ShellExecuteW, ShellWindows, CSIDL_DESKTOP,
     FOLDERFLAGS, FOLDERVIEWMODE, FVM_ICON, FWF_AUTOARRANGE, FWF_SNAPTOGRID, KF_FLAG_DEFAULT,
     SID_STopLevelBrowser, SVGIO_ALLVIEW, SWC_DESKTOP, SWFO_NEEDDISPATCH,
 };
@@ -153,19 +153,3 @@ pub fn known_folder(id: &GUID) -> Option<PathBuf> {
     }
 }
 
-pub fn create_shortcut(lnk: &Path, target: &Path, description: &str) -> bool {
-    unsafe {
-        let Ok(link) = CoCreateInstance::<_, IShellLinkW>(&ShellLink, None, CLSCTX_INPROC_SERVER) else {
-            return false;
-        };
-        let t = HSTRING::from(target.as_os_str());
-        let _ = link.SetPath(&t);
-        let _ = link.SetDescription(&HSTRING::from(description));
-        let _ = link.SetIconLocation(&t, 0);
-        if let Some(dir) = target.parent() {
-            let _ = link.SetWorkingDirectory(&HSTRING::from(dir.as_os_str()));
-        }
-        let Ok(file) = link.cast::<IPersistFile>() else { return false };
-        file.Save(&HSTRING::from(lnk.as_os_str()), true).is_ok()
-    }
-}

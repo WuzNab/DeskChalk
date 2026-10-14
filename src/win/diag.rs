@@ -46,8 +46,9 @@ pub fn run() {
         None => out.push_str("\nicons: could not read the desktop view\n"),
     }
     out.push_str(&format!(
-        "\ninstall dir: {}\nconfig dir: {}\nautostart: {}\n",
-        install::install_dir().display(),
+        "\nexe: {}\nuninstaller: {}\nconfig dir: {}\nautostart: {}\n",
+        std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default(),
+        install::uninstaller().map_or("none (portable)".into(), |p| p.display().to_string()),
         install::config_dir().display(),
         install::autostart_enabled()
     ));

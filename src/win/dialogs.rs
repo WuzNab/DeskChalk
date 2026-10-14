@@ -7,8 +7,8 @@ use windows::Win32::UI::Controls::Dialogs::{
     ChooseColorW, CC_ANYCOLOR, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, IDNO, IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_ICONWARNING, MB_OK,
-    MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MB_YESNOCANCEL, MESSAGEBOX_RESULT, MESSAGEBOX_STYLE,
+    MessageBoxW, IDYES, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MESSAGEBOX_RESULT,
+    MESSAGEBOX_STYLE,
 };
 
 fn show(owner: Option<HWND>, text: &str, style: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
@@ -17,28 +17,6 @@ fn show(owner: Option<HWND>, text: &str, style: MESSAGEBOX_STYLE) -> MESSAGEBOX_
 
 pub fn ask(owner: Option<HWND>, text: &str) -> bool {
     show(owner, text, MB_YESNO | MB_ICONQUESTION) == IDYES
-}
-
-pub enum Answer {
-    Yes,
-    No,
-    Cancel,
-}
-
-pub fn ask3(text: &str) -> Answer {
-    match show(None, text, MB_YESNOCANCEL | MB_ICONQUESTION) {
-        IDYES => Answer::Yes,
-        IDNO => Answer::No,
-        _ => Answer::Cancel,
-    }
-}
-
-pub fn info(text: &str) {
-    show(None, text, MB_OK | MB_ICONINFORMATION);
-}
-
-pub fn warn(text: &str) {
-    show(None, text, MB_OK | MB_ICONWARNING);
 }
 
 fn to_colorref(c: Rgb) -> COLORREF {

@@ -2,19 +2,22 @@
 
 use super::util::wide;
 use crate::geom::Rect;
-use crate::model::{Rgb, ZoneStyle};
+use crate::model::{self, Rgb, StyleCmd, ZoneStyle};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use crate::render::{self, Painter};
-use tiny_skia::{FillRule, PixmapMut, Stroke, Transform};
+use tiny_skia::{FillRule, LineCap, LineJoin, PathBuilder, PixmapMut, Stroke, Transform};
 use windows::core::PWSTR;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Gdi::{
     CreateDIBSection, DeleteObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreatePopupMenu, DestroyMenu, GetMenuItemCount, InsertMenuItemW, SetMenuDefaultItem,
-    TrackPopupMenuEx, HMENU, MENUITEMINFOW, MENU_ITEM_STATE, MFS_CHECKED, MFS_DISABLED,
-    MFT_RADIOCHECK, MFT_SEPARATOR, MFT_STRING, MIIM_BITMAP, MIIM_FTYPE, MIIM_ID, MIIM_STATE,
-    MIIM_STRING, MIIM_SUBMENU, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    CreatePopupMenu, DestroyMenu, GetMenuItemCount, GetMenuItemInfoW, InsertMenuItemW,
+    SetMenuDefaultItem, SetMenuItemInfoW, TrackPopupMenuEx, HMENU, MENUITEMINFOW,
+    MENU_ITEM_STATE, MFS_CHECKED, MFS_DISABLED, MFT_RADIOCHECK, MFT_SEPARATOR, MFT_STRING,
+    MIIM_BITMAP, MIIM_FTYPE, MIIM_ID, MIIM_STATE, MIIM_STRING, MIIM_SUBMENU, TPM_NONOTIFY,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON,
 };
 
 pub mod cmd {
@@ -37,8 +40,9 @@ pub mod cmd {
     pub const REDO: u32 = 17;
     pub const DELETE_ALL: u32 = 18;
     pub const APPLY_ALL: u32 = 19;
-    pub const GRID_WHITE: u32 = 20;
-    pub const GRID_BLACK: u32 = 21;
+    pub const MIX_COLORS: u32 = 22;
+    pub const GRID_REPEL: u32 = 23;
+    pub const DOT_CUSTOM: u32 = 24;
     pub const Z_RENAME: u32 = 30;
     pub const Z_DUPLICATE: u32 = 31;
     pub const Z_FRONT: u32 = 32;
@@ -54,6 +58,8 @@ pub mod cmd {
     pub const ICON_SIZE: u32 = 140;
     /// + index into fonts::FONT_CHOICES
     pub const FONT: u32 = 160;
+    /// + index into model::DOT_COLORS
+    pub const DOT_COLOR: u32 = 180;
     /// + style offset, applies to the clicked box
     pub const STYLE_ZONE: u32 = 1000;
     /// + style offset, applies to the style for new boxes
@@ -62,12 +68,13 @@ pub mod cmd {
 
 pub struct Menu {
     pub h: HMENU,
-    bitmaps: Vec<HBITMAP>,
+    /// Swatch bitmaps owned by this menu (freed with it).
+    bitmaps: RefCell<Vec<HBITMAP>>,
 }
 
 impl Menu {
     pub fn new() -> Menu {
-        Menu { h: unsafe { CreatePopupMenu().unwrap_or_default() }, bitmaps: Vec::new() }
+        Menu { h: unsafe { CreatePopupMenu().unwrap_or_default() }, bitmaps: RefCell::new(Vec::new()) }
     }
 
     fn insert(&mut self, mut mii: MENUITEMINFOW, text: Option<&str>) {
@@ -123,11 +130,16 @@ impl Menu {
     }
 
     pub fn color(&mut self, id: u32, text: &str, c: Rgb, checked: bool, scale: f32) {
-        let bmp = swatch(c, scale);
+        let bmp = swatch(c, scale, checked);
         if let Some(b) = bmp {
-            self.bitmaps.push(b);
+            self.bitmaps.borrow_mut().push(b);
         }
         self.entry(id, text, checked, true, true, bmp);
+    }
+
+    /// A grayed-out caption.
+    pub fn heading(&mut self, text: &str) {
+        self.entry(0, text, false, false, false, None);
     }
 
     pub fn sep(&mut self) {
@@ -139,7 +151,7 @@ impl Menu {
 
     pub fn sub(&mut self, text: &str, mut child: Menu) {
         let h = std::mem::take(&mut child.h);
-        self.bitmaps.append(&mut child.bitmaps);
+        self.bitmaps.borrow_mut().append(&mut child.bitmaps.borrow_mut());
         self.insert(MENUITEMINFOW { fMask: MIIM_SUBMENU, hSubMenu: h, ..Default::default() }, Some(text));
     }
 
@@ -164,15 +176,16 @@ impl Drop for Menu {
             if !self.h.is_invalid() {
                 let _ = DestroyMenu(self.h);
             }
-            for b in self.bitmaps.drain(..) {
+            for b in self.bitmaps.borrow_mut().drain(..) {
                 let _ = DeleteObject(b.into());
             }
         }
     }
 }
 
-/// A small rounded color square for color menu items.
-fn swatch(c: Rgb, scale: f32) -> Option<HBITMAP> {
+/// A small rounded color square for color menu items, with a check mark when selected
+/// (Windows draws the bitmap where the check mark would go).
+fn swatch(c: Rgb, scale: f32, checked: bool) -> Option<HBITMAP> {
     let size = (16.0 * scale).round().max(12.0) as i32;
     unsafe {
         let bmi = BITMAPINFO {
@@ -200,6 +213,23 @@ fn swatch(c: Rgb, scale: f32) -> Option<HBITMAP> {
                 let stroke = Stroke { width: scale.max(1.0), ..Stroke::default() };
                 pm.stroke_path(&path, &p.paint(Rgb(0x55, 0x55, 0x55), 0.9), &stroke, Transform::identity(), None);
             }
+            if checked {
+                let s = size as f32;
+                let mut pb = PathBuilder::new();
+                pb.move_to(s * 0.27, s * 0.52);
+                pb.line_to(s * 0.44, s * 0.69);
+                pb.line_to(s * 0.74, s * 0.33);
+                if let Some(tick) = pb.finish() {
+                    let ink = if c.luminance() > 0.45 { Rgb(0x10, 0x10, 0x10) } else { Rgb(0xFF, 0xFF, 0xFF) };
+                    let stroke = Stroke {
+                        width: (1.8 * scale).max(1.5),
+                        line_cap: LineCap::Round,
+                        line_join: LineJoin::Round,
+                        ..Stroke::default()
+                    };
+                    pm.stroke_path(&tick, &p.paint(ink, 1.0), &stroke, Transform::identity(), None);
+                }
+            }
         }
         Some(bmp)
     }
@@ -213,12 +243,95 @@ pub fn add_style_menus(m: &mut Menu, style: &ZoneStyle, base: u32, scale: f32) {
             if e.separator {
                 sub.sep();
             }
+            if let Some(h) = e.heading {
+                sub.heading(h);
+            }
             match e.color {
                 Some(c) => sub.color(base + e.offset, &e.label, c, e.checked, scale),
                 None => sub.radio(base + e.offset, &e.label, e.checked),
             }
         }
         m.sub(title, sub);
+    }
+}
+
+/// Settings that apply instantly; clicking them keeps the menu open so several can be
+/// changed in a row. Everything else (dialogs, actions) closes the menu as usual.
+pub fn is_sticky(id: u32) -> bool {
+    use cmd::*;
+    let within = |base: u32, len: usize| (base..base + len as u32).contains(&id);
+    let style = |base: u32| within(base, model::STYLE_SPAN as usize)
+        && StyleCmd::decode(id - base).is_some_and(|c| !c.opens_dialog());
+    matches!(
+        id,
+        SHOW_ZONES | GRID_SHOW | SNAP | AUTOSTART | MINIMIZE | HOTKEY | AUTO_ARRANGE | ALIGN_GRID
+            | MIX_COLORS | GRID_REPEL | UNDO | REDO | Z_FRONT | Z_BACK
+    ) || within(GRID_SIZE, model::DOT_SIZES.len())
+        || within(GRID_OPACITY, model::DOT_OPACITY.len())
+        || within(ICON_SIZE, model::ICON_SIZES.len())
+        || within(FONT, 20)
+        || within(DOT_COLOR, model::DOT_COLORS.len())
+        || style(STYLE_ZONE)
+        || style(STYLE_DEFAULT)
+}
+
+fn item_info(h: HMENU, pos: u32) -> Option<MENUITEMINFOW> {
+    let mut mii = MENUITEMINFOW {
+        cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
+        fMask: MIIM_ID | MIIM_STATE | MIIM_SUBMENU | MIIM_FTYPE | MIIM_BITMAP,
+        ..Default::default()
+    };
+    unsafe { GetMenuItemInfoW(h, pos, true, &mut mii).ok()? };
+    Some(mii)
+}
+
+fn collect_states(h: HMENU, out: &mut HashMap<u32, (MENU_ITEM_STATE, HBITMAP)>) {
+    let n = unsafe { GetMenuItemCount(Some(h)) }.max(0) as u32;
+    for pos in 0..n {
+        let Some(mii) = item_info(h, pos) else { continue };
+        if !mii.hSubMenu.is_invalid() {
+            collect_states(mii.hSubMenu, out);
+        } else if mii.wID != 0 {
+            out.insert(mii.wID, (mii.fState, mii.hbmpItem));
+        }
+    }
+}
+
+/// Copies check marks, enabled states and swatches from `fresh` into the open menu `live`.
+pub fn sync_states(live: &Menu, fresh: Menu) {
+    let mut states = HashMap::new();
+    collect_states(fresh.h, &mut states);
+    apply_states(live.h, &states);
+    // The live menu may now show some of fresh's swatches: keep them alive with it.
+    live.bitmaps.borrow_mut().append(&mut fresh.bitmaps.borrow_mut());
+}
+
+fn apply_states(h: HMENU, states: &HashMap<u32, (MENU_ITEM_STATE, HBITMAP)>) {
+    let n = unsafe { GetMenuItemCount(Some(h)) }.max(0) as u32;
+    for pos in 0..n {
+        let Some(mii) = item_info(h, pos) else { continue };
+        if !mii.hSubMenu.is_invalid() {
+            apply_states(mii.hSubMenu, states);
+            continue;
+        }
+        let Some(&(want, bitmap)) = states.get(&mii.wID) else { continue };
+        let mask = MFS_CHECKED | MFS_DISABLED;
+        if (mii.fState & mask) == (want & mask) {
+            continue;
+        }
+        let mut set = MENUITEMINFOW {
+            cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
+            fMask: MIIM_STATE,
+            fState: (mii.fState & !mask) | (want & mask),
+            ..Default::default()
+        };
+        if !bitmap.is_invalid() {
+            set.fMask |= MIIM_BITMAP;
+            set.hbmpItem = bitmap;
+        }
+        unsafe {
+            let _ = SetMenuItemInfoW(h, pos, true, &set);
+        }
     }
 }
 
