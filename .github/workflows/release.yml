@@ -1,0 +1,30 @@
+# Push a tag like v0.1.0 to build DeskChalk.exe and attach it to a GitHub Release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release --locked
+      - name: Checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash target/release/DeskChalk.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  DeskChalk.exe" | Out-File -Encoding ascii target/release/DeskChalk.exe.sha256
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/release/DeskChalk.exe
+            target/release/DeskChalk.exe.sha256
+          generate_release_notes: true
