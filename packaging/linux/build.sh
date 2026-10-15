@@ -2,10 +2,13 @@
 # Builds the Linux downloads from target/release/DeskChalk:
 #   dist/DeskChalk_Setup_Linux_v<version>.deb      (installs DeskChalk for Debian, Ubuntu, Mint, ...)
 #   dist/DeskChalk_Portable_Linux_v<version>.tar.gz
-# Usage: packaging/linux/build.sh 0.3.0   (needs dpkg-deb; rsvg-convert adds PNG icons)
+# Usage: packaging/linux/build.sh 0.3.0 [package-version]   (needs dpkg-deb; rsvg-convert adds PNG icons)
+# The package version defaults to the version. Test builds pass e.g. 0.3.0~ci12: each one then
+# counts as an update to the one before, and as older than the real 0.3.0.
 set -eu
 
 version="$1"
+pkgversion="${2:-$1}"
 root=$(cd "$(dirname "$0")/../.." && pwd)
 here="$root/packaging/linux"
 bin="$root/target/release/DeskChalk"
@@ -29,7 +32,7 @@ install -D -m 644 "$root/LICENSE.txt" "$pkg/usr/share/doc/deskchalk/copyright"
 
 size=$(du -sk "$pkg/usr" | cut -f1)
 mkdir -p "$pkg/DEBIAN"
-sed -e "s/@VERSION@/$version/" -e "s/@SIZE@/$size/" "$here/control" > "$pkg/DEBIAN/control"
+sed -e "s/@VERSION@/$pkgversion/" -e "s/@SIZE@/$size/" "$here/control" > "$pkg/DEBIAN/control"
 dpkg-deb --root-owner-group --build "$pkg" "$out/DeskChalk_Setup_Linux_v$version.deb"
 
 mkdir "$tmp/DeskChalk"

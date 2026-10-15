@@ -45,7 +45,10 @@ jobs:
       - name: Package
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q librsvg2-bin
-          sh packaging/linux/build.sh "$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          # Each test build gets its own package version (0.3.0~ci12), so installing a newer
+          # one is an update rather than "already installed".
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          sh packaging/linux/build.sh "$version" "$version~ci$GITHUB_RUN_NUMBER"
       - uses: actions/upload-artifact@v6
         with:
           name: DeskChalk-Linux
