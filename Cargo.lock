@@ -420,6 +420,7 @@ dependencies = [
  "windows",
  "winit",
  "winresource",
+ "x11rb",
  "zbus",
  "zune-jpeg",
 ]

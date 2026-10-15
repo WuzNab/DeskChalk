@@ -22,6 +22,8 @@ pub struct View {
     pub installed: bool,
     pub can_pick_color: bool,
     pub any_zones: bool,
+    /// The dots follow the desktop's own icon grid (spacing doesn't apply).
+    pub grid_follows_icons: bool,
 }
 
 pub struct DeskTray {
@@ -192,13 +194,17 @@ impl ksni::Tray for DeskTray {
         let mut dots = vec![
             check("Dots move away from the mouse (while drawing)", cmd::GRID_REPEL, g.repel),
             MenuItem::Separator,
-            heading("Spacing"),
         ];
-        let spacing = model::GRID_SPACINGS.iter().position(|(_, s)| (s - g.spacing).abs() < 0.5);
-        dots.push(radios(
-            model::GRID_SPACINGS.iter().enumerate().map(|(i, (n, _))| (n.to_string(), None, cmd::GRID_SPACING + i as u32)).collect(),
-            spacing,
-        ));
+        if v.grid_follows_icons {
+            dots.push(heading("Spacing: follows your desktop icons"));
+        } else {
+            dots.push(heading("Spacing"));
+            let spacing = model::GRID_SPACINGS.iter().position(|(_, s)| (s - g.spacing).abs() < 0.5);
+            dots.push(radios(
+                model::GRID_SPACINGS.iter().enumerate().map(|(i, (n, _))| (n.to_string(), None, cmd::GRID_SPACING + i as u32)).collect(),
+                spacing,
+            ));
+        }
         dots.push(MenuItem::Separator);
         dots.push(heading("Color"));
         let mut colors: Vec<(String, Option<Rgb>, u32)> =

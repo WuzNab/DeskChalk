@@ -108,17 +108,24 @@ align to grid, start with Windows, and uninstall. Menus stay open while you chan
 ## Linux
 
 Linux desktops have no layer between the wallpaper and the icons that other apps can draw in, so DeskChalk
-paints your boxes **into the wallpaper**. They sit behind your icons on X11 and Wayland alike, and your own
-wallpaper is underneath. Pick a new wallpaper any time; DeskChalk notices and paints the boxes onto it.
+shows a **copy of your wallpaper with the boxes painted on**. They sit behind your icons on X11 and Wayland
+alike. Your own picture is never changed: DeskChalk remembers it and switches back to it when you exit or
+uninstall. Pick a new wallpaper any time; DeskChalk notices and paints the boxes onto that one.
 
-- **Supported desktops:** GNOME and Ubuntu, KDE Plasma, Xfce, Cinnamon (Linux Mint), MATE and Budgie.
+- **Supported desktops:** GNOME and Ubuntu, KDE Plasma, Xfce, Cinnamon (Linux Mint), MATE and Budgie, on any
+  distribution. Elsewhere DeskChalk says so and leaves your wallpaper alone.
+- **Your wallpaper is safe:** if DeskChalk can't read the wallpaper setting or the picture, it doesn't paint at
+  all and tells you why. PNG, JPEG and WebP always work; other formats (JPEG XL, SVG, ...) work through the
+  desktop's own image tools when they're installed.
 - **Tray icon:** most desktops show it. Stock GNOME (e.g. Fedora) needs the
   [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/); without a tray,
   open DeskChalk again from the applications menu to draw.
 - **Drawing:** click the tray icon. Your wallpaper fills the screen (icons hide until you're done). Drawing works
   as on Windows, except that **Shift** toggles snapping while dragging (Alt-drag moves windows on Linux).
   Right-click a box for its style, or empty space for undo, redo and grid options.
-- **The grid** has its own spacing (tray menu → *Grid dots* → *Spacing*), since Linux desktops place icons differently.
+- **The grid follows your desktop icons** by itself: DeskChalk reads the icon layout of GNOME and Ubuntu
+  (Desktop Icons NG), Cinnamon (Nemo), Xfce and KDE Plasma, including icon size, panels and the dock, and
+  keeps up when they change. Without desktop icons it uses an even grid (tray menu → *Grid dots* → *Spacing*).
   Dots move away from the mouse while you draw; in the wallpaper they hold still.
 - **Exit** from the tray menu puts your original wallpaper back.
 
@@ -131,7 +138,7 @@ and settings. Nothing is left behind, and your desktop icons are not touched.
 The portable version: tray menu → **Remove DeskChalk (portable)…** deletes its boxes, settings and startup entry;
 then delete the portable exe yourself.
 
-**Linux:** tray menu → **Uninstall DeskChalk…** puts your wallpaper back, deletes your boxes and settings and removes
+**Linux:** tray menu → **Uninstall DeskChalk…** switches back to your own wallpaper, deletes your boxes and settings and removes
 the package (it asks for your password). Removing the package another way leaves the painted wallpaper in place, so
 use the tray menu, or run `deskchalk --quit` first. The portable version: tray menu → **Remove DeskChalk (portable)…**,
 then delete the folder.

@@ -12,6 +12,7 @@ pub mod util;
 mod bake;
 mod edit;
 mod fonts;
+mod icongrid;
 mod image;
 mod ipc;
 mod monitors;
@@ -57,6 +58,8 @@ const SAVE_DELAY: Duration = Duration::from_millis(800);
 /// Changes are painted into the wallpaper after a short pause (several in a row paint once).
 const PAINT_DELAY: Duration = Duration::from_millis(350);
 const ANIM: Duration = Duration::from_millis(16);
+/// How often the desktop's icon grid is looked up again (it also is when settings change).
+const GRID_CHECK: Duration = Duration::from_secs(30);
 const DOUBLE_CLICK: Duration = Duration::from_millis(450);
 /// Give up waiting for the wallpaper to be put back when exiting after this long.
 const EXIT_WAIT: Duration = Duration::from_secs(5);
@@ -135,6 +138,11 @@ pub fn main() {
     if has("--log") {
         util::enable_log(paths::config_dir().join("deskchalk.log"));
     }
+    // A bug ends DeskChalk only (it's an ordinary program); note why in the log first.
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("DeskChalk stopped: {info}");
+        log!("DeskChalk stopped: {info}");
+    }));
     if has("--quit") {
         if ipc::send("quit") {
             ipc::wait_gone(10);
@@ -203,6 +211,10 @@ struct App {
     fresh: bool,
     monitors: Vec<Monitor>,
     handles: Vec<MonitorHandle>,
+    /// The program drawing the desktop icons, and whether any screen follows its grid.
+    icons: Option<icongrid::Manager>,
+    grid_follows_icons: bool,
+    grid_checked: Option<Instant>,
     backend: Backend,
     state: State,
     tray: Option<ksni::blocking::Handle<tray::DeskTray>>,
@@ -218,6 +230,8 @@ struct App {
     exit_at: Option<Instant>,
     watch_mtime: Option<SystemTime>,
     warned: bool,
+    /// Told the user the wallpaper setting can't be read (so nothing is painted).
+    warned_original: bool,
     exiting: Option<Exit>,
 
     // Edit mode.
@@ -260,6 +274,9 @@ impl App {
             fresh,
             monitors: Vec::new(),
             handles: Vec::new(),
+            icons: None,
+            grid_follows_icons: false,
+            grid_checked: None,
             backend: Backend::detect(),
             state,
             tray: None,
@@ -273,6 +290,7 @@ impl App {
             exit_at: None,
             watch_mtime: None,
             warned: false,
+            warned_original: false,
             exiting: None,
             editing: false,
             wins: Vec::new(),
@@ -351,6 +369,14 @@ impl App {
         for m in &mons {
             println!("monitor {}: {}x{} at {},{}, scale {}{}", m.key, m.w, m.h, m.x, m.y, m.scale, if m.primary { ", primary" } else { "" });
         }
+        let (manager, grids) = icongrid::detect(&mons);
+        match manager {
+            Some(m) => println!("desktop icons: {}", m.name()),
+            None => println!("desktop icons: none found (even dot grid)"),
+        }
+        for (k, g) in &grids {
+            println!("icon grid on {k}: cells {:.1} x {:.1} from {:.1},{:.1}, area {:.0} x {:.0}", g.cell.x, g.cell.y, g.origin.x, g.origin.y, g.area.w, g.area.h);
+        }
         match self.backend.snapshot(&mons) {
             Some(s) => {
                 for (k, b) in &s.bases {
@@ -378,19 +404,51 @@ impl App {
         let list = monitors::read(el, self.cfg.grid.spacing);
         let mons: Vec<Monitor> = list.iter().map(|(m, _)| m.clone()).collect();
         let changed = mons.len() != self.monitors.len() || mons.iter().zip(&self.monitors).any(|(a, b)| !a.same_geometry(b));
-        self.monitors = mons;
         self.handles = list.into_iter().map(|(_, h)| h).collect();
+        if changed {
+            self.monitors = mons;
+            self.apply_icon_grids();
+        }
         changed
     }
 
+    /// Even grids with DeskChalk's own spacing, then the desktop's icon grid where it is known.
     fn regrid(&mut self) {
         let sp = self.cfg.grid.spacing;
         for m in &mut self.monitors {
             m.grid = monitors::grid_for(m.w, m.h, m.scale, sp);
         }
-        for w in &mut self.wins {
-            w.mon.grid = monitors::grid_for(w.mon.w, w.mon.h, w.mon.scale, sp);
+        self.apply_icon_grids();
+    }
+
+    /// Looks up the desktop's icon grid and uses it for the dots and snapping. True if any
+    /// screen's grid changed.
+    fn apply_icon_grids(&mut self) -> bool {
+        self.grid_checked = Some(Instant::now());
+        let (manager, grids) = icongrid::detect(&self.monitors);
+        let sp = self.cfg.grid.spacing;
+        let mut changed = manager != self.icons;
+        for m in &mut self.monitors {
+            let g = grids.iter().find(|(k, _)| *k == m.key).map(|(_, g)| *g).unwrap_or_else(|| monitors::grid_for(m.w, m.h, m.scale, sp));
+            if m.grid != g {
+                m.grid = g;
+                changed = true;
+            }
         }
+        if changed {
+            match manager {
+                Some(mgr) => log!("desktop icons by {}: icon grid found on {} of {} screens", mgr.name(), grids.len(), self.monitors.len()),
+                None => log!("no desktop icon program found; using an even dot grid"),
+            }
+        }
+        self.icons = manager;
+        self.grid_follows_icons = !grids.is_empty();
+        for w in &mut self.wins {
+            if let Some(m) = self.monitors.iter().find(|m| m.key == w.mon.key) {
+                w.set_grid(m.grid, (m.w, m.h));
+            }
+        }
+        changed
     }
 
     /// Remembers the wallpaper the user has (from before DeskChalk painted, or picked since).
@@ -460,6 +518,22 @@ impl App {
         }
         if !self.wants_paint() {
             self.unpaint();
+            return;
+        }
+        if self.monitors.is_empty() {
+            return;
+        }
+        // Without knowing the wallpaper there's nothing to paint the boxes on, and painting
+        // anyway would replace the user's wallpaper. Leave it alone.
+        if self.state.original.is_none() {
+            if !self.warned_original {
+                self.warned_original = true;
+                log!("the wallpaper setting can't be read; not painting");
+                notify::notify(
+                    "DeskChalk can't read your wallpaper setting",
+                    "So it leaves your wallpaper alone and doesn't show boxes for now. It tries again when the wallpaper changes.",
+                );
+            }
             return;
         }
         let Some(tx) = &self.worker else { return };
@@ -535,15 +609,27 @@ impl App {
             if self.editing {
                 self.exit_edit();
             }
+            // A new screen shows its own wallpaper so far: remember it before painting.
+            self.sync_original();
             self.paint_at = Some(Instant::now() + PAINT_DELAY);
         }
+        let mut settings_changed = false;
         if let Some(f) = self.backend.watch_file() {
             let m = mtime(&f);
             if m != self.watch_mtime {
                 self.watch_mtime = m;
+                settings_changed = true;
                 if self.sync_original() && self.wants_paint() {
                     self.paint_at = Some(Instant::now() + PAINT_DELAY);
                 }
+            }
+        }
+        // Icon size, panels or the dock may have changed the desktop's icon grid.
+        if (settings_changed || self.grid_checked.is_none_or(|t| t.elapsed() >= GRID_CHECK)) && self.apply_icon_grids() {
+            if self.editing {
+                self.invalidate_all();
+            } else if self.cfg.grid.show_on_desktop && self.wants_paint() {
+                self.paint_at = Some(Instant::now() + PAINT_DELAY);
             }
         }
     }
@@ -587,6 +673,7 @@ impl App {
             installed: paths::installed(),
             can_pick_color: self.can_pick_color,
             any_zones: !self.cfg.zones.is_empty(),
+            grid_follows_icons: self.grid_follows_icons,
         }
     }
 
@@ -844,9 +931,9 @@ impl App {
     fn ask_remove(&self) {
         let installed = paths::installed();
         let q = if installed {
-            "Uninstall DeskChalk?\n\nThis puts your wallpaper back, deletes all of your boxes and settings, and removes DeskChalk (your password may be asked for). Your desktop icons are not touched."
+            "Uninstall DeskChalk?\n\nYour wallpaper goes back to your own picture, without the boxes. All of your boxes and settings are deleted and DeskChalk is removed (your password may be asked for). Your desktop icons are not touched."
         } else {
-            "Remove DeskChalk?\n\nThis puts your wallpaper back and deletes all of your boxes and settings, then closes DeskChalk. Delete the DeskChalk file yourself afterwards. Your desktop icons are not touched."
+            "Remove DeskChalk?\n\nYour wallpaper goes back to your own picture, without the boxes. All of your boxes and settings are deleted and DeskChalk closes; delete the DeskChalk file yourself afterwards. Your desktop icons are not touched."
         };
         let q = q.to_string();
         let proxy = self.proxy.clone();
@@ -903,7 +990,9 @@ impl App {
         if self.editing || self.exiting.is_some() {
             return;
         }
-        self.read_monitors(el);
+        if !self.read_monitors(el) {
+            self.apply_icon_grids();
+        }
         self.title_fonts = fonts::load(&self.cfg.font);
         self.ui_fonts = fonts::load_ui();
         let original = self.state.original.clone().unwrap_or_default();

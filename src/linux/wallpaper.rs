@@ -437,8 +437,8 @@ fn kde_desktops() -> Result<Vec<KdeDesktop>, String> {
         .collect())
 }
 
-/// The monitor a Plasma desktop is on: its geometry matches the screen layout (or the
-/// physical pixels); otherwise the nearest one.
+/// The monitor a rectangle reported by the desktop (a Plasma desktop, a Desktop Icons NG
+/// screen) is on: it matches the screen layout or the physical pixels; otherwise the nearest.
 pub fn match_monitor<'a>(g: (f32, f32, f32, f32), mons: &'a [Monitor]) -> Option<&'a Monitor> {
     let close = |a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)| {
         (a.0 - b.0).abs() < 2.0 && (a.1 - b.1).abs() < 2.0 && (a.2 - b.2).abs() < 2.0 && (a.3 - b.3).abs() < 2.0

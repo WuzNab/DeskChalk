@@ -3,8 +3,9 @@
 //! softbuffer (X11 and Wayland alike).
 
 use super::bake;
-use super::monitors::{self, Monitor};
+use super::monitors::Monitor;
 use crate::geom::{Pt, Rect};
+use crate::grid::Grid;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use tiny_skia::{Pixmap, PixmapMut};
@@ -45,6 +46,18 @@ fn dimmed(pm: &Pixmap) -> Vec<u32> {
             0xFF00_0000 | (c(p[0]) << 16) | (c(p[1]) << 8) | c(p[2])
         })
         .collect()
+}
+
+/// A grid for a screen `sx` x `sy` times the size.
+fn scaled(g: Grid, sx: f32, sy: f32) -> Grid {
+    if (sx - 1.0).abs() < 1e-4 && (sy - 1.0).abs() < 1e-4 {
+        return g;
+    }
+    Grid {
+        origin: Pt::new(g.origin.x * sx, g.origin.y * sy),
+        cell: Pt::new(g.cell.x * sx, g.cell.y * sy),
+        area: Rect::new(g.area.x * sx, g.area.y * sy, g.area.w * sx, g.area.h * sy),
+    }
 }
 
 fn bytes(buf: &mut [u32]) -> &mut [u8] {
@@ -89,9 +102,10 @@ impl EditWin {
         if (w, h) == (self.mon.w, self.mon.h) && self.base.len() == (w * h) as usize {
             return false;
         }
+        let (sx, sy) = (w as f32 / self.mon.w.max(1) as f32, h as f32 / self.mon.h.max(1) as f32);
+        self.mon.grid = scaled(self.mon.grid, sx, sy);
         self.mon.w = w;
         self.mon.h = h;
-        self.mon.grid = monitors::grid_for(w, h, self.mon.scale, self.mon.grid.cell.x / self.mon.scale.max(0.1));
         // Scaled from the full-size wallpaper every time (never from an earlier scaled copy).
         let scaled = ((self.wallpaper.width(), self.wallpaper.height()) != (w, h))
             .then(|| super::image::cover(&self.wallpaper, w, h))
@@ -101,6 +115,15 @@ impl EditWin {
         self.history.clear();
         self.invalidate(None);
         true
+    }
+
+    /// Uses `grid` (made for a screen of `size` pixels) for this window.
+    pub fn set_grid(&mut self, grid: Grid, size: (u32, u32)) {
+        let g = scaled(grid, self.mon.w as f32 / size.0.max(1) as f32, self.mon.h as f32 / size.1.max(1) as f32);
+        if g != self.mon.grid {
+            self.mon.grid = g;
+            self.invalidate(None);
+        }
     }
 
     /// Asks for `region` (or everything) to be drawn at the next redraw.
@@ -186,7 +209,8 @@ impl EditWin {
     }
 }
 
-/// The wallpaper for an edit window (the original wallpaper, never DeskChalk's own picture).
+/// The wallpaper for an edit window (the original wallpaper, never DeskChalk's own picture;
+/// a plain gray one if it can't be read).
 pub fn wallpaper_for(base: Option<&super::wallpaper::Base>, mon: &Monitor, cache: &mut std::collections::HashMap<std::path::PathBuf, Option<Pixmap>>) -> Option<Pixmap> {
-    bake::background(base, mon.w, mon.h, cache)
+    bake::background(base, mon.w, mon.h, cache).ok().or_else(|| super::image::solid(mon.w, mon.h, crate::model::Rgb(0x30, 0x30, 0x30)))
 }

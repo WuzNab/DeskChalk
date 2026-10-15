@@ -6,7 +6,7 @@ use super::wallpaper::{Base, Pictures, Snapshot};
 use super::{fonts, image};
 use crate::editor;
 use crate::geom::Pt;
-use crate::model::{Config, Rgb};
+use crate::model::Config;
 use crate::render::{self, GridLayer, Painter, Scene, ZoneItem};
 use crate::text::Fonts;
 use std::collections::HashMap;
@@ -23,18 +23,23 @@ pub struct Job {
     pub dir: PathBuf,
 }
 
-/// The wallpaper (or plain color) under the boxes, filling the monitor.
-pub fn background(base: Option<&Base>, w: u32, h: u32, cache: &mut HashMap<PathBuf, Option<Pixmap>>) -> Option<Pixmap> {
+/// The wallpaper (or plain color) under the boxes, filling the monitor. An error when the
+/// picture can't be read: then nothing gets painted, so the user's wallpaper stays as it is.
+pub fn background(base: Option<&Base>, w: u32, h: u32, cache: &mut HashMap<PathBuf, Option<Pixmap>>) -> Result<Pixmap, String> {
+    let oom = || "not enough memory for the wallpaper picture".to_string();
     match base {
         Some(Base::Image(p)) => {
-            let img = cache.entry(p.clone()).or_insert_with(|| image::load(p));
+            let img = cache.entry(p.clone()).or_insert_with(|| image::load(p, w.max(h)));
             match img {
-                Some(img) => image::cover(img, w, h),
-                None => image::solid(w, h, Rgb(0x30, 0x30, 0x30)),
+                Some(img) => image::cover(img, w, h).ok_or_else(oom),
+                None => {
+                    let name = p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
+                    Err(format!("DeskChalk can't read your wallpaper picture \u{201C}{name}\u{201D}, so it leaves your wallpaper as it is. PNG, JPEG and WebP pictures always work."))
+                }
             }
         }
-        Some(Base::Color(c)) => image::solid(w, h, *c),
-        None => image::solid(w, h, Rgb(0x30, 0x30, 0x30)),
+        Some(Base::Color(c)) => image::solid(w, h, *c).ok_or_else(oom),
+        None => Err("DeskChalk doesn't know this screen's wallpaper yet.".into()),
     }
 }
 
@@ -77,11 +82,19 @@ pub fn bake(job: &Job) -> Result<Pictures, String> {
     let mut cache = HashMap::new();
     let mut painted: Vec<(&Monitor, Pixmap)> = Vec::new();
     for mon in &job.monitors {
-        let mut pm = background(job.original.base_for(&mon.key), mon.w, mon.h, &mut cache).ok_or("out of memory")?;
+        let base = job.original.base_for(&mon.key);
+        // With a picture per screen, a screen whose wallpaper isn't known yet is left alone.
+        if base.is_none() && job.per_monitor {
+            continue;
+        }
+        let mut pm = background(base, mon.w, mon.h, &mut cache)?;
         render::draw(&mut pm.as_mut(), &scene(&job.cfg, mon, fonts.as_ref(), false, Pt::new(0.0, 0.0)));
         painted.push((mon, pm));
     }
     drop(cache);
+    if painted.is_empty() {
+        return Err("no screen to paint".into());
+    }
     let file = |suffix: &str| job.dir.join(format!("wall-{}{suffix}.png", job.serial));
     if job.per_monitor || painted.len() == 1 {
         let mut per_monitor = Vec::new();
@@ -137,7 +150,7 @@ mod tests {
     use super::*;
     use crate::geom::Rect;
     use crate::linux::monitors::grid_for;
-    use crate::model::{Zone, ZoneStyle};
+    use crate::model::{Rgb, Zone, ZoneStyle};
 
     fn mon(key: &str, x: i32, w: u32, h: u32, scale: f32, wayland: bool) -> Monitor {
         Monitor { key: key.into(), x, y: 0, w, h, scale, primary: x == 0, grid: grid_for(w, h, scale, 96.0), wayland }
@@ -170,7 +183,7 @@ mod tests {
             dir: dir.clone(),
         };
         let pics = bake(&job).unwrap();
-        let span = image::load(pics.spanned.as_ref().unwrap()).unwrap();
+        let span = image::load(pics.spanned.as_ref().unwrap(), 400).unwrap();
         assert_eq!((span.width(), span.height()), (400, 100));
         let px = |x: u32, y: u32| span.pixel(x, y).unwrap();
         // The box is on the second screen only.
@@ -179,9 +192,32 @@ mod tests {
 
         let per = bake(&Job { per_monitor: true, serial: 8, ..job }).unwrap();
         assert_eq!(per.per_monitor.len(), 2);
-        let b = image::load(&per.per_monitor[1].1).unwrap();
+        let b = image::load(&per.per_monitor[1].1, 200).unwrap();
         assert!(b.pixel(30, 25).unwrap().red() > 200);
         clean(&dir, &[]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unreadable_wallpaper_is_left_alone() {
+        let dir = std::env::temp_dir().join(format!("deskchalk-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bad = dir.join("not-a-picture.jxl");
+        std::fs::write(&bad, b"this is not an image").unwrap();
+        let mut cfg = Config::default();
+        cfg.grid.show_on_desktop = true;
+        let job = Job {
+            serial: 1,
+            cfg,
+            monitors: vec![mon("A", 0, 100, 50, 1.0, false)],
+            original: Snapshot { bases: vec![(String::new(), Base::Image(bad))], restore: Vec::new() },
+            per_monitor: false,
+            dir: dir.join("out"),
+        };
+        let err = bake(&job).err().unwrap();
+        assert!(err.contains("not-a-picture.jxl"), "{err}");
+        // Nothing was written, so there is nothing that could replace the wallpaper.
+        assert!(std::fs::read_dir(dir.join("out")).map_or(true, |d| d.count() == 0));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

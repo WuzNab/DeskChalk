@@ -1,15 +1,18 @@
-//! Wallpaper images: reading PNG, JPEG and WebP, scaling them to fill a screen the way
-//! desktops "zoom" a wallpaper, and writing PNG.
+//! Wallpaper images: reading PNG, JPEG and WebP (other formats through the desktop's own
+//! image tools), scaling them to fill a screen the way desktops "zoom" a wallpaper, and
+//! writing PNG.
 
+use super::util;
 use std::io::Cursor;
 use std::path::Path;
 use tiny_skia::{Color, FilterQuality, Pixmap, PixmapPaint, Transform};
 
-/// Decodes an image file into an opaque pixmap. None for formats DeskChalk can't read
-/// (the box picture then goes on a plain color).
-pub fn load(path: &Path) -> Option<Pixmap> {
+/// Decodes an image file into an opaque pixmap. PNG, JPEG and WebP are read directly; other
+/// formats (JPEG XL, SVG, AVIF, ...) are converted with the image loaders the desktop itself
+/// uses, at up to `max_side` pixels. None if the picture can't be read at all.
+pub fn load(path: &Path, max_side: u32) -> Option<Pixmap> {
     let bytes = std::fs::read(path).ok()?;
-    if bytes.starts_with(b"\x89PNG") {
+    let native = if bytes.starts_with(b"\x89PNG") {
         load_png(&bytes)
     } else if bytes.starts_with(&[0xFF, 0xD8]) {
         load_jpeg(&bytes)
@@ -17,7 +20,25 @@ pub fn load(path: &Path) -> Option<Pixmap> {
         load_webp(&bytes)
     } else {
         None
+    };
+    native.or_else(|| convert(path, max_side))
+}
+
+/// Converts a picture to PNG with gdk-pixbuf (whatever formats the desktop can show) or, for
+/// SVG, rsvg-convert, then reads that.
+fn convert(path: &Path, max_side: u32) -> Option<Pixmap> {
+    let out = std::env::temp_dir().join(format!("deskchalk-convert-{}.png", std::process::id()));
+    let (src, dst) = (path.to_string_lossy().into_owned(), out.to_string_lossy().into_owned());
+    let size = max_side.clamp(256, 8192).to_string();
+    let svg = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg") || e.eq_ignore_ascii_case("svgz"));
+    let converted = util::run("gdk-pixbuf-thumbnailer", &["-s", &size, &src, &dst])
+        || (svg && util::run("rsvg-convert", &["-w", &size, "-a", "-o", &dst, &src]));
+    let pm = converted.then(|| std::fs::read(&out).ok().and_then(|b| load_png(&b))).flatten();
+    let _ = std::fs::remove_file(&out);
+    if pm.is_none() {
+        log!("can't read the picture {}", path.display());
     }
+    pm
 }
 
 /// Pixels with 1 (gray), 2 (gray + alpha), 3 (RGB) or 4 (RGBA) channels, made opaque
@@ -43,10 +64,20 @@ fn from_channels(w: u32, h: u32, data: &[u8], channels: usize) -> Option<Pixmap>
     Some(pm)
 }
 
+/// Pictures larger than this (80 megapixels) aren't decoded: they would need gigabytes.
+const MAX_PIXELS: u64 = 80_000_000;
+
+fn fits(w: u32, h: u32) -> bool {
+    w > 0 && h > 0 && (w as u64) * (h as u64) <= MAX_PIXELS
+}
+
 fn load_png(bytes: &[u8]) -> Option<Pixmap> {
     let mut dec = png::Decoder::new(Cursor::new(bytes));
     dec.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = dec.read_info().ok()?;
+    if !fits(reader.info().width, reader.info().height) {
+        return None;
+    }
     let mut buf = vec![0u8; reader.output_buffer_size()];
     let frame = reader.next_frame(&mut buf).ok()?;
     let channels = match frame.color_type {
@@ -61,6 +92,11 @@ fn load_png(bytes: &[u8]) -> Option<Pixmap> {
 
 fn load_jpeg(bytes: &[u8]) -> Option<Pixmap> {
     let mut dec = zune_jpeg::JpegDecoder::new(bytes);
+    dec.decode_headers().ok()?;
+    let (w, h) = dec.dimensions()?;
+    if !fits(w as u32, h as u32) {
+        return None;
+    }
     let pixels = dec.decode().ok()?;
     let info = dec.info()?;
     let channels = dec.get_output_colorspace().map_or(3, |c| c.num_components());
@@ -70,6 +106,9 @@ fn load_jpeg(bytes: &[u8]) -> Option<Pixmap> {
 fn load_webp(bytes: &[u8]) -> Option<Pixmap> {
     let mut dec = image_webp::WebPDecoder::new(Cursor::new(bytes)).ok()?;
     let (w, h) = dec.dimensions();
+    if !fits(w, h) {
+        return None;
+    }
     let mut buf = vec![0u8; dec.output_buffer_size()?];
     dec.read_image(&mut buf).ok()?;
     from_channels(w, h, &buf, if dec.has_alpha() { 4 } else { 3 })
@@ -191,7 +230,7 @@ mod tests {
         let path = dir.join("a.png");
         let src = solid(64, 32, crate::model::Rgb(0x77, 0xDD, 0x77)).unwrap();
         save_png(&src, &path).unwrap();
-        let back = load(&path).unwrap();
+        let back = load(&path, 64).unwrap();
         assert_eq!((back.width(), back.height()), (64, 32));
         let p = back.pixel(5, 5).unwrap();
         assert_eq!((p.red(), p.green(), p.blue(), p.alpha()), (0x77, 0xDD, 0x77, 255));

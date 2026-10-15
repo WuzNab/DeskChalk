@@ -61,6 +61,7 @@ memmap2 = "0.9"
 png = "0.17"
 zune-jpeg = "0.4"
 image-webp = "0.2"
+x11rb = "0.13"
 
 [build-dependencies]
 tiny-skia = "0.11"
