@@ -437,20 +437,20 @@ fn kde_desktops() -> Result<Vec<KdeDesktop>, String> {
         .collect())
 }
 
-/// The monitor a Plasma desktop is on: its geometry matches either the physical or the
-/// logical (scaled) layout; otherwise the nearest one.
+/// The monitor a Plasma desktop is on: its geometry matches the screen layout (or the
+/// physical pixels); otherwise the nearest one.
 pub fn match_monitor<'a>(g: (f32, f32, f32, f32), mons: &'a [Monitor]) -> Option<&'a Monitor> {
     let close = |a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)| {
         (a.0 - b.0).abs() < 2.0 && (a.1 - b.1).abs() < 2.0 && (a.2 - b.2).abs() < 2.0 && (a.3 - b.3).abs() < 2.0
     };
     let physical = |m: &Monitor| (m.x as f32, m.y as f32, m.w as f32, m.h as f32);
     mons.iter()
-        .find(|m| close(g, physical(m)) || close(g, m.logical()))
+        .find(|m| close(g, m.layout()) || close(g, physical(m)))
         .or_else(|| {
             let c = (g.0 + g.2 / 2.0, g.1 + g.3 / 2.0);
             mons.iter().min_by(|a, b| {
                 let d = |m: &Monitor| {
-                    let l = m.logical();
+                    let l = m.layout();
                     (l.0 + l.2 / 2.0 - c.0).powi(2) + (l.1 + l.3 / 2.0 - c.1).powi(2)
                 };
                 d(a).total_cmp(&d(b))
@@ -511,8 +511,8 @@ mod tests {
     use super::*;
     use crate::linux::monitors::grid_for;
 
-    fn mon(key: &str, x: i32, y: i32, w: u32, h: u32, scale: f32) -> Monitor {
-        Monitor { key: key.into(), x, y, w, h, scale, primary: x == 0, grid: grid_for(w, h, scale, 96.0) }
+    fn mon(key: &str, x: i32, y: i32, w: u32, h: u32, scale: f32, wayland: bool) -> Monitor {
+        Monitor { key: key.into(), x, y, w, h, scale, primary: x == 0, grid: grid_for(w, h, scale, 96.0), wayland }
     }
 
     #[test]
@@ -525,13 +525,17 @@ mod tests {
 
     #[test]
     fn plasma_screens_match_monitors() {
-        // A 4K screen at 200% left of a 1080p screen at 100%.
-        let mons = [mon("DP-1", 0, 0, 3840, 2160, 2.0), mon("HDMI-1", 3840, 0, 1920, 1080, 1.0)];
-        // Wayland reports the logical layout...
-        assert_eq!(match_monitor((0.0, 0.0, 1920.0, 1080.0), &mons).unwrap().key, "DP-1");
-        assert_eq!(match_monitor((1920.0, 0.0, 1920.0, 1080.0), &mons).unwrap().key, "HDMI-1");
-        // ...X11 the physical one.
-        assert_eq!(match_monitor((3840.0, 0.0, 1920.0, 1080.0), &mons).unwrap().key, "HDMI-1");
+        // A 4K screen at 200% left of a 1080p screen at 100%. On Wayland, Plasma reports
+        // logical geometry and winit puts HDMI-1 at its logical x (1920) times its scale (1).
+        let wl = [mon("DP-1", 0, 0, 3840, 2160, 2.0, true), mon("HDMI-1", 1920, 0, 1920, 1080, 1.0, true)];
+        assert_eq!(match_monitor((0.0, 0.0, 1920.0, 1080.0), &wl).unwrap().key, "DP-1");
+        assert_eq!(match_monitor((1920.0, 0.0, 1920.0, 1080.0), &wl).unwrap().key, "HDMI-1");
+        // On X11 everything is in pixels.
+        let x11 = [mon("DP-1", 0, 0, 3840, 2160, 2.0, false), mon("HDMI-1", 3840, 0, 1920, 1080, 1.0, false)];
+        assert_eq!(match_monitor((0.0, 0.0, 3840.0, 2160.0), &x11).unwrap().key, "DP-1");
+        assert_eq!(match_monitor((3840.0, 0.0, 1920.0, 1080.0), &x11).unwrap().key, "HDMI-1");
+        // Off by a bit: the nearest screen.
+        assert_eq!(match_monitor((3900.0, 10.0, 1900.0, 1000.0), &x11).unwrap().key, "HDMI-1");
     }
 
     #[test]

@@ -99,13 +99,13 @@ pub fn bake(job: &Job) -> Result<Pictures, String> {
     Ok(Pictures { spanned: Some(path), per_monitor: Vec::new() })
 }
 
-/// One picture across all screens, laid out like the desktop's logical screen layout
-/// (that is what "spanned" wallpapers follow), at the sharpest screen's scale.
+/// One picture across all screens, laid out like the desktop's screen layout (that is what
+/// "spanned" wallpapers follow), sharp on the screen with the most pixels per layout unit.
 fn spanned(painted: &[(&Monitor, Pixmap)]) -> Option<Pixmap> {
-    let k = painted.iter().map(|(m, _)| m.scale).fold(0.1f32, f32::max);
+    let k = painted.iter().map(|(m, _)| m.w as f32 / m.layout().2.max(1.0)).fold(0.1f32, f32::max);
     let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
     for (m, _) in painted {
-        let (x, y, w, h) = m.logical();
+        let (x, y, w, h) = m.layout();
         x0 = x0.min(x);
         y0 = y0.min(y);
         x1 = x1.max(x + w);
@@ -114,7 +114,7 @@ fn spanned(painted: &[(&Monitor, Pixmap)]) -> Option<Pixmap> {
     let mut out = Pixmap::new(((x1 - x0) * k).round() as u32, ((y1 - y0) * k).round() as u32)?;
     out.fill(tiny_skia::Color::BLACK);
     for (m, pm) in painted {
-        let (x, y, w, h) = m.logical();
+        let (x, y, w, h) = m.layout();
         image::draw_scaled(&mut out, pm, ((x - x0) * k).round(), ((y - y0) * k).round(), (w * k).round(), (h * k).round());
     }
     Some(out)
@@ -139,8 +139,8 @@ mod tests {
     use crate::linux::monitors::grid_for;
     use crate::model::{Zone, ZoneStyle};
 
-    fn mon(key: &str, x: i32, w: u32, h: u32, scale: f32) -> Monitor {
-        Monitor { key: key.into(), x, y: 0, w, h, scale, primary: x == 0, grid: grid_for(w, h, scale, 96.0) }
+    fn mon(key: &str, x: i32, w: u32, h: u32, scale: f32, wayland: bool) -> Monitor {
+        Monitor { key: key.into(), x, y: 0, w, h, scale, primary: x == 0, grid: grid_for(w, h, scale, 96.0), wayland }
     }
 
     #[test]
@@ -164,7 +164,7 @@ mod tests {
         let job = Job {
             serial: 7,
             cfg,
-            monitors: vec![mon("A", 0, 200, 100, 1.0), mon("B", 200, 200, 100, 1.0)],
+            monitors: vec![mon("A", 0, 200, 100, 1.0, false), mon("B", 200, 200, 100, 1.0, false)],
             original,
             per_monitor: false,
             dir: dir.clone(),
@@ -183,5 +183,19 @@ mod tests {
         assert!(b.pixel(30, 25).unwrap().red() > 200);
         clean(&dir, &[]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn spans_mixed_scaling_like_wayland_desktops() {
+        // Wayland: a 4K screen at 200% (logical 0..100) left of a screen at 100% (logical 100..200).
+        // winit reports the second one's position as logical x * its own scale = 100.
+        let (a, b) = (mon("A", 0, 200, 100, 2.0, true), mon("B", 100, 100, 50, 1.0, true));
+        let red = image::solid(200, 100, Rgb(255, 0, 0)).unwrap();
+        let blue = image::solid(100, 50, Rgb(0, 0, 255)).unwrap();
+        let span = spanned(&[(&a, red), (&b, blue)]).unwrap();
+        // Two layout units per pixel of the sharper screen: 200 x 50 layout units -> 400 x 100.
+        assert_eq!((span.width(), span.height()), (400, 100));
+        assert!(span.pixel(150, 50).unwrap().red() > 200);
+        assert!(span.pixel(250, 50).unwrap().blue() > 200);
     }
 }

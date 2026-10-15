@@ -10,7 +10,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: Test
         run: cargo test --locked
@@ -27,7 +27,7 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item "target\installer\DeskChalk_Setup_Windows_v$version.exe" dist\
           Copy-Item target\release\DeskChalk.exe "dist\DeskChalk_Portable_Windows_v$version.exe"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: DeskChalk-Windows
           path: dist/*
@@ -36,7 +36,7 @@ jobs:
   linux:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: Test
         run: cargo test --locked
@@ -46,7 +46,7 @@ jobs:
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q librsvg2-bin
           sh packaging/linux/build.sh "$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: DeskChalk-Linux
           path: dist/*

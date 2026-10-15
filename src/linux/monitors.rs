@@ -5,6 +5,7 @@ use crate::geom::{Pt, Rect};
 use crate::grid::Grid;
 use winit::event_loop::ActiveEventLoop;
 use winit::monitor::MonitorHandle;
+use winit::platform::wayland::ActiveEventLoopExtWayland;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Monitor {
@@ -18,6 +19,8 @@ pub struct Monitor {
     pub scale: f32,
     pub primary: bool,
     pub grid: Grid,
+    /// A Wayland session (screens are arranged in scaled units, see `layout`).
+    pub wayland: bool,
 }
 
 impl Monitor {
@@ -29,10 +32,11 @@ impl Monitor {
         Rect::new(0.0, 0.0, self.w as f32, self.h as f32)
     }
 
-    /// Position and size in the desktop's logical layout (how Wayland desktops arrange
-    /// screens with different scaling; on X11 it's the physical layout divided by the scale).
-    pub fn logical(&self) -> (f32, f32, f32, f32) {
-        let s = self.scale.max(0.1);
+    /// Position and size in the units the desktop arranges screens in. Wayland desktops use
+    /// scaled (logical) units, and winit reports a position as that times the screen's own
+    /// scale; X11 arranges screens in pixels.
+    pub fn layout(&self) -> (f32, f32, f32, f32) {
+        let s = if self.wayland { self.scale.max(0.1) } else { 1.0 };
         (self.x as f32 / s, self.y as f32 / s, self.w as f32 / s, self.h as f32 / s)
     }
 
@@ -57,6 +61,7 @@ pub fn grid_for(w: u32, h: u32, scale: f32, spacing: f32) -> Grid {
 
 pub fn read(el: &ActiveEventLoop, spacing: f32) -> Vec<(Monitor, MonitorHandle)> {
     let primary = el.primary_monitor();
+    let wayland = el.is_wayland();
     let mut out: Vec<(Monitor, MonitorHandle)> = el
         .available_monitors()
         .filter_map(|h| {
@@ -79,6 +84,7 @@ pub fn read(el: &ActiveEventLoop, spacing: f32) -> Vec<(Monitor, MonitorHandle)>
                 scale,
                 primary: primary.as_ref() == Some(&h),
                 grid: grid_for(size.width, size.height, scale, spacing),
+                wayland,
             };
             Some((m, h))
         })

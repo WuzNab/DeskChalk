@@ -15,7 +15,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: Check the version
         shell: pwsh
@@ -40,7 +40,7 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item "target\installer\DeskChalk_Setup_Windows_v$env:VERSION.exe" dist\
           Copy-Item target\release\DeskChalk.exe "dist\DeskChalk_Portable_Windows_v$env:VERSION.exe"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: windows
           path: dist/*
@@ -49,7 +49,7 @@ jobs:
     # The oldest supported runner, so the program runs on older distributions too (glibc 2.35+).
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: Check the version
         run: |
@@ -66,7 +66,7 @@ jobs:
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q librsvg2-bin
           sh packaging/linux/build.sh "$VERSION"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: linux
           path: dist/*
@@ -75,7 +75,7 @@ jobs:
     needs: [windows, linux]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
