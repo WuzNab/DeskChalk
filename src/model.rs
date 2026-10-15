@@ -175,13 +175,16 @@ pub struct GridSettings {
     pub size: f32,
     /// Opacity in percent.
     pub opacity: u8,
-    /// Dots drift away from the mouse while editing.
+    /// Dots drift away from the mouse.
     pub repel: bool,
+    /// Distance between dots in device-independent pixels where the desktop has no icon grid
+    /// to follow (Linux). Windows uses the desktop's own icon spacing.
+    pub spacing: f32,
 }
 
 impl Default for GridSettings {
     fn default() -> Self {
-        GridSettings { show_on_desktop: false, color: WHITE, size: 1.5, opacity: 75, repel: true }
+        GridSettings { show_on_desktop: false, color: WHITE, size: 1.5, opacity: 75, repel: true, spacing: 96.0 }
     }
 }
 
@@ -330,6 +333,14 @@ pub const DOT_OPACITY: &[(&str, u8)] = &[
     ("90%", 90),
     ("100%", 100),
 ];
+#[cfg_attr(windows, allow(dead_code))]
+pub const GRID_SPACINGS: &[(&str, f32)] = &[
+    ("Small (64 px)", 64.0),
+    ("Medium (96 px)", 96.0),
+    ("Large (128 px)", 128.0),
+    ("Extra large (160 px)", 160.0),
+];
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const ICON_SIZES: &[(&str, i32)] = &[
     ("Small (32 px)", 32),
     ("Medium (48 px)", 48),

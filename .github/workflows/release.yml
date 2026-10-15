@@ -1,5 +1,7 @@
-# Push a tag like v0.2.2 (matching the version in Cargo.toml) to build
-# DeskChalk_Setup_v0.2.2.exe and DeskChalk_Portable_v0.2.2.exe and attach them to a release.
+# Push a tag like v0.3.0 (matching the version in Cargo.toml) to build the downloads and
+# attach them to a release:
+#   DeskChalk_Setup_Windows_v0.3.0.exe   DeskChalk_Portable_Windows_v0.3.0.exe
+#   DeskChalk_Setup_Linux_v0.3.0.deb     DeskChalk_Portable_Linux_v0.3.0.tar.gz
 name: Release
 
 on:
@@ -10,20 +12,12 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build --release --locked
-      - name: Install Inno Setup
-        shell: pwsh
-        run: |
-          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
-            choco install innosetup --no-progress -y
-          }
-      - name: Build setup
+      - name: Check the version
         shell: pwsh
         run: |
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
@@ -31,20 +25,64 @@ jobs:
             throw "Tag ${{ github.ref_name }} doesn't match Cargo.toml version $version"
           }
           "VERSION=$version" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$version" installer\DeskChalk.iss
+      - name: Build
+        run: cargo build --release --locked
+      - name: Build setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$env:VERSION" installer\DeskChalk.iss
       - name: Collect files
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item "target\installer\DeskChalk_Setup_v$env:VERSION.exe" dist\
-          Copy-Item target\release\DeskChalk.exe "dist\DeskChalk_Portable_v$env:VERSION.exe"
-          Get-ChildItem dist\*.exe | ForEach-Object {
-            "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name
-          } | Out-File -Encoding ascii dist\SHA256SUMS.txt
+          Copy-Item "target\installer\DeskChalk_Setup_Windows_v$env:VERSION.exe" dist\
+          Copy-Item target\release\DeskChalk.exe "dist\DeskChalk_Portable_Windows_v$env:VERSION.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+
+  linux:
+    # The oldest supported runner, so the program runs on older distributions too (glibc 2.35+).
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check the version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "${{ github.ref_name }}" ]; then
+            echo "Tag ${{ github.ref_name }} doesn't match Cargo.toml version $version"; exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Test
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --release --locked
+      - name: Package
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q librsvg2-bin
+          sh packaging/linux/build.sh "$VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+
+  publish:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum DeskChalk_* > SHA256SUMS.txt && cat SHA256SUMS.txt
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/*.exe
-            dist/SHA256SUMS.txt
+          files: dist/*
           generate_release_notes: true

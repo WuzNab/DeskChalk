@@ -1,7 +1,7 @@
 ; DeskChalk setup wizard (Inno Setup 6).
 ; Build the app first (cargo build --release), then:
-;   iscc /DAppVersion=0.2.2 installer\DeskChalk.iss
-; Output: target\installer\DeskChalk_Setup_v0.2.2.exe
+;   iscc /DAppVersion=0.3.0 installer\DeskChalk.iss
+; Output: target\installer\DeskChalk_Setup_Windows_v0.3.0.exe
 ;
 ; Installs for the current user only (no admin rights), shows up in Settings > Apps and
 ; Programs and Features, updates in place, and uninstalls cleanly (boxes and settings too).
@@ -28,7 +28,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 OutputDir=..\target\installer
-OutputBaseFilename=DeskChalk_Setup_v{#AppVersion}
+OutputBaseFilename=DeskChalk_Setup_Windows_v{#AppVersion}
 SetupIconFile=..\assets\deskchalk.ico
 WizardSmallImageFile=wizard-small-55.bmp,wizard-small-110.bmp
 UninstallDisplayIcon={app}\DeskChalk.exe

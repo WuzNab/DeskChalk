@@ -76,6 +76,7 @@ impl Grid {
 
 /// Finds the most common offset of `values` modulo `period` (icons aligned to the
 /// grid all share it). Returns None when there are no samples.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn dominant_phase(values: impl Iterator<Item = f32>, period: f32) -> Option<f32> {
     if period < 1.0 {
         return None;

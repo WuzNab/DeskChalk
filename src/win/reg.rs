@@ -5,14 +5,29 @@ use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegGetValueW, RegOpenKeyExW,
-    RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, KEY_WRITE,
-    REG_OPTION_NON_VOLATILE, REG_ROUTINE_FLAGS, REG_SZ, REG_VALUE_TYPE, RRF_RT_REG_BINARY,
-    RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
+    RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, KEY_WRITE,
+    REG_DWORD, REG_OPTION_NON_VOLATILE, REG_ROUTINE_FLAGS, REG_SZ, REG_VALUE_TYPE,
+    RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
 };
 
 pub fn set_sz(path: &str, name: &str, value: &str) -> bool {
     let data: Vec<u8> = wide(value).iter().flat_map(|c| c.to_le_bytes()).collect();
     set_raw(path, name, REG_SZ, &data)
+}
+
+pub fn set_dword(path: &str, name: &str, value: u32) -> bool {
+    set_raw(path, name, REG_DWORD, &value.to_le_bytes())
+}
+
+pub fn key_exists(path: &str) -> bool {
+    unsafe {
+        let mut key = HKEY::default();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, &HSTRING::from(path), None, KEY_READ, &mut key) != ERROR_SUCCESS {
+            return false;
+        }
+        let _ = RegCloseKey(key);
+        true
+    }
 }
 
 fn set_raw(path: &str, name: &str, ty: REG_VALUE_TYPE, data: &[u8]) -> bool {

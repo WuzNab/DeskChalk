@@ -1,12 +1,13 @@
+# Builds and tests every push, on any branch. Each run keeps its downloads for two weeks:
+# open the run under the Actions tab and look for "Artifacts" at the bottom.
 name: CI
 
 on:
   push:
-    branches: [main]
-  pull_request:
+    branches: ["**"]
 
 jobs:
-  build:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,7 +19,35 @@ jobs:
       - name: Build setup
         shell: pwsh
         run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
             choco install innosetup --no-progress -y
           }
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q /DAppVersion=0.0.0 installer\DeskChalk.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$version" installer\DeskChalk.iss
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "target\installer\DeskChalk_Setup_Windows_v$version.exe" dist\
+          Copy-Item target\release\DeskChalk.exe "dist\DeskChalk_Portable_Windows_v$version.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskChalk-Windows
+          path: dist/*
+          retention-days: 14
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test
+        run: cargo test --locked
+      - name: Build release
+        run: cargo build --release --locked
+      - name: Package
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q librsvg2-bin
+          sh packaging/linux/build.sh "$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeskChalk-Linux
+          path: dist/*
+          retention-days: 14

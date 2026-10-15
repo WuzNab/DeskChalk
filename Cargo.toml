@@ -1,6 +1,6 @@
 [package]
 name = "deskchalk"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 description = "Draw labeled boxes on your desktop wallpaper, behind your icons."
 repository = "https://github.com/WuzNab/DeskChalk"
@@ -37,16 +37,30 @@ features = [
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_System_Registry",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_System_Variant",
     "Win32_UI_Controls",
     "Win32_UI_Controls_Dialogs",
     "Win32_UI_HiDpi",
+    "Win32_UI_Input",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging",
 ]
+
+# Linux: fullscreen edit windows (X11 and Wayland, libraries loaded at run time), the tray
+# icon (StatusNotifierItem over D-Bus), and reading/writing wallpaper images.
+[target.'cfg(target_os = "linux")'.dependencies]
+winit = { version = "0.30", default-features = false, features = ["x11", "wayland", "wayland-dlopen", "rwh_06"] }
+softbuffer = { version = "0.4", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"] }
+ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+memmap2 = "0.9"
+png = "0.17"
+zune-jpeg = "0.4"
+image-webp = "0.2"
 
 [build-dependencies]
 tiny-skia = "0.11"

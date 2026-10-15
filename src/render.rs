@@ -34,6 +34,7 @@ impl Painter {
 }
 
 /// Fills a premultiplied 32-bit buffer with black at `alpha` (0 clears it).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn clear(buf: &mut [u8], alpha: f32) {
     let a = (alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
     if a == 0 {

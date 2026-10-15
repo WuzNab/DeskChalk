@@ -55,6 +55,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, TME_LEAVE, TRACKMOUSEEVENT, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_D, VK_DELETE, VK_DOWN,
     VK_ESCAPE, VK_F2, VK_LEFT, VK_MENU, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP, VK_Y, VK_Z,
 };
+use windows::Win32::UI::Input::{RegisterRawInputDevices, RAWINPUTDEVICE, RIDEV_INPUTSINK, RIDEV_REMOVE};
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Shell::{FWF_AUTOARRANGE, FWF_SNAPTOGRID, NIN_SELECT};
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -81,6 +82,7 @@ const T_REFRESH: usize = 5;
 const T_FOCUS: usize = 6;
 const T_TRIM: usize = 7;
 const T_ANIM: usize = 8;
+const T_DESK_MOUSE: usize = 9;
 const ANIM_MS: u32 = 15;
 
 const HEALTH_MS: u32 = 2000;
@@ -227,6 +229,8 @@ struct Layer {
     key: String,
     /// DirectComposition content (None when using UpdateLayeredWindow).
     comp: Option<comp::CompLayer>,
+    /// The part of the monitor the window covers (x, y, w, h in monitor pixels).
+    area: (i32, i32, i32, i32),
 }
 
 struct Overlay {
@@ -296,8 +300,13 @@ struct App {
     comp: Option<comp::Compositor>,
     /// The usage hint shows until the first click in an edit session.
     show_hint: bool,
-    /// Overlay index and mouse position the dots are currently drifting away from.
+    /// Where the dots are currently drifting away from: the mouse position on overlay `i`
+    /// while editing, otherwise on desktop layer `i`.
     repel: Option<(usize, Pt)>,
+    /// Raw mouse input is registered (the desktop dots follow the mouse).
+    mouse_watch: bool,
+    /// A mouse move is waiting for the next frame (T_DESK_MOUSE).
+    desk_pending: bool,
     /// How far the drift has eased in (0..1), where it's heading, and the last animation tick.
     repel_strength: f32,
     repel_target: f32,
@@ -353,6 +362,36 @@ fn overlay_scene<'a>(v: &OverlayView<'a>, mon: &'a Monitor, origin: Pt, repel: O
         mix_colors: v.cfg.mix_colors,
         // The overlay covers the work area; hints and titles stay inside it.
         bounds: mon.work_rel(),
+    }
+}
+
+/// What a desktop layer shows: the boxes and (with grid view on) the dots, drawn from `origin`
+/// (monitor coordinates). `repel`: where the dots are pushed away from, and how far it eased in.
+fn layer_scene<'a>(cfg: &'a Config, mon: &'a Monitor, title_fonts: Option<&'a Fonts>, origin: Pt, repel: Option<(Pt, f32)>) -> Scene<'a> {
+    let size = mon.size();
+    let zones = cfg
+        .zones
+        .iter()
+        .filter(|z| cfg.show_zones && z.monitor == mon.key)
+        .map(|z| ZoneItem { zone: z, rect: editor::zone_rect(z, size), selected: false })
+        .collect();
+    Scene {
+        origin,
+        scale: mon.scale(),
+        painter: Painter { swap_rb: true },
+        title_fonts,
+        ui_fonts: None,
+        grid: cfg.grid.show_on_desktop.then_some(GridLayer {
+            grid: &mon.grid,
+            color: cfg.grid.color,
+            radius: cfg.grid.size,
+            alpha: cfg.grid.opacity as f32 / 100.0,
+            repel,
+        }),
+        zones,
+        edit: None,
+        mix_colors: cfg.mix_colors,
+        bounds: Rect::new(0.0, 0.0, size.0, size.1),
     }
 }
 
@@ -452,6 +491,9 @@ fn create_layer(hinst: HINSTANCE, parent: HWND, composition: bool) -> Option<HWN
 impl App {
     fn new(hwnd: HWND, hinst: HINSTANCE, opts: RunOpts) -> App {
         let cfg_path = install::config_dir().join("config.json");
+        if let Some(src) = install::rescue_config(&cfg_path) {
+            log!("brought settings back from {}", src.display());
+        }
         let cfg = config::load(&cfg_path);
         App {
             hwnd,
@@ -478,6 +520,8 @@ impl App {
             comp: None,
             show_hint: true,
             repel: None,
+            mouse_watch: false,
+            desk_pending: false,
             repel_strength: 0.0,
             repel_target: 0.0,
             anim_tick: None,
@@ -486,6 +530,9 @@ impl App {
     }
 
     fn start(&mut self) {
+        if install::ensure_registered() {
+            log!("the setup's Settings > Apps entry was missing; registered DeskChalk again");
+        }
         self.tray.add(&self.tooltip());
         self.apply_hotkey();
         self.attach();
@@ -687,28 +734,20 @@ impl App {
         if self.cfg.show_zones && self.cfg.zones.iter().any(|z| !z.title.trim().is_empty()) {
             self.ensure_title_fonts();
         }
+        // A full redraw shows the dots at rest; the next mouse move pushes them again.
+        self.repel = None;
+        self.repel_strength = 0.0;
         let origin = desk.parent_origin();
-        let painter = Painter { swap_rb: true };
         let composition = self.comp.is_some();
         let mut kept: Vec<String> = Vec::new();
         for mon in &self.monitors {
             let size = mon.size();
             let full = Rect::new(0.0, 0.0, size.0, size.1);
-            let zones: Vec<ZoneItem> = if self.cfg.show_zones {
-                self.cfg
-                    .zones
-                    .iter()
-                    .filter(|z| z.monitor == mon.key)
-                    .map(|z| ZoneItem { zone: z, rect: editor::zone_rect(z, size), selected: false })
-                    .collect()
-            } else {
-                Vec::new()
-            };
             let show_grid = self.cfg.grid.show_on_desktop;
             let mut bounds: Option<Rect> = None;
-            for z in &zones {
+            for z in self.cfg.zones.iter().filter(|z| self.cfg.show_zones && z.monitor == mon.key) {
                 // Titles on the border line reach a little outside the box.
-                let r = z.rect.inset(-(z.zone.style.title_size * 0.9 + 6.0) * mon.scale());
+                let r = editor::zone_rect(z, size).inset(-(z.style.title_size * 0.9 + 6.0) * mon.scale());
                 bounds = Some(bounds.map_or(r, |b| b.union(&r)));
             }
             if show_grid {
@@ -716,11 +755,14 @@ impl App {
             }
             let Some(b) = bounds.and_then(|b| b.intersect(&full)) else { continue };
             let (bx, by, bw, bh) = b.round_out();
-            let hwnd = match self.layers.iter().find(|l| l.key == mon.key) {
-                Some(l) => l.hwnd,
+            let hwnd = match self.layers.iter_mut().find(|l| l.key == mon.key) {
+                Some(l) => {
+                    l.area = (bx, by, bw, bh);
+                    l.hwnd
+                }
                 None => match create_layer(self.hinst, desk.parent, composition) {
                     Some(h) => {
-                        self.layers.push(Layer { hwnd: h, key: mon.key.clone(), comp: None });
+                        self.layers.push(Layer { hwnd: h, key: mon.key.clone(), comp: None, area: (bx, by, bw, bh) });
                         h
                     }
                     None => {
@@ -741,24 +783,8 @@ impl App {
                 );
             }
             let mut pixels = vec![0u8; (bw * bh * 4) as usize];
-            let scene = Scene {
-                origin: Pt::new(bx as f32, by as f32),
-                scale: mon.scale(),
-                painter,
-                title_fonts: self.title_fonts.as_ref().map(|(_, f)| f),
-                ui_fonts: None,
-                grid: show_grid.then_some(GridLayer {
-                    grid: &mon.grid,
-                    color: self.cfg.grid.color,
-                    radius: self.cfg.grid.size,
-                    alpha: self.cfg.grid.opacity as f32 / 100.0,
-                    repel: None,
-                }),
-                zones,
-                edit: None,
-                mix_colors: self.cfg.mix_colors,
-                bounds: full,
-            };
+            let fonts = self.title_fonts.as_ref().map(|(_, f)| f);
+            let scene = layer_scene(&self.cfg, mon, fonts, Pt::new(bx as f32, by as f32), None);
             if let Some(mut pm) = tiny_skia::PixmapMut::from_bytes(&mut pixels, bw as u32, bh as u32) {
                 render::draw(&mut pm, &scene);
             }
@@ -789,9 +815,117 @@ impl App {
             }
         }
         self.layers = keep;
-        // Fonts are only kept around while editing.
-        self.title_fonts = None;
+        // Fonts are only kept around while editing, or while the dots follow the mouse
+        // (titles near the mouse get redrawn too).
+        if !self.desk_repel_wanted() {
+            self.title_fonts = None;
+        }
+        self.update_mouse_watch();
         self.schedule(T_TRIM, 3000);
+    }
+
+    /// Redraws only `region` (monitor coordinates) of desktop layer `i`, e.g. around the
+    /// mouse. Needs DirectComposition (the surface keeps everything outside the region).
+    fn render_layer_region(&mut self, i: usize, region: Rect) {
+        let Some(comp) = &self.comp else { return };
+        let Some(layer) = self.layers.get(i) else { return };
+        let Some(cl) = layer.comp.as_ref() else { return };
+        let Some(mon) = find_monitor(&self.monitors, &layer.key) else { return };
+        let (ax, ay, aw, ah) = layer.area;
+        let bitmap = Rect::new(0.0, 0.0, aw as f32, ah as f32);
+        let Some(local) = region.offset(-ax as f32, -ay as f32).intersect(&bitmap) else { return };
+        let (x, y, w, h) = local.round_out();
+        let (w, h) = (w.min(aw - x), h.min(ah - y));
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        let at = self.repel.filter(|(j, _)| *j == i).map(|(_, p)| (p, self.repel_strength));
+        let fonts = self.title_fonts.as_ref().map(|(_, f)| f);
+        let scene = layer_scene(&self.cfg, mon, fonts, Pt::new((ax + x) as f32, (ay + y) as f32), at);
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        if let Some(mut pm) = tiny_skia::PixmapMut::from_bytes(&mut buf, w as u32, h as u32) {
+            render::draw(&mut pm, &scene);
+        }
+        if let Err(e) = comp.present_region(cl, x as u32, y as u32, w as u32, h as u32, &buf) {
+            log!("updating the desktop layer failed: {e}");
+        }
+    }
+
+    /// The dots on the desktop follow the mouse: grid view and the effect are on, and the
+    /// desktop layer can be updated in part (DirectComposition).
+    fn desk_repel_wanted(&self) -> bool {
+        !self.editing
+            && !self.uninstalling
+            && self.comp.is_some()
+            && self.cfg.grid.show_on_desktop
+            && self.cfg.grid.repel
+            && !self.layers.is_empty()
+    }
+
+    /// Listens to mouse movement anywhere (raw input, no hook) only while the desktop dots
+    /// follow the mouse; Windows then sends WM_INPUT even though DeskChalk has no focus.
+    fn update_mouse_watch(&mut self) {
+        let want = self.desk_repel_wanted();
+        if want == self.mouse_watch {
+            return;
+        }
+        let dev = RAWINPUTDEVICE {
+            usUsagePage: 0x01, // generic desktop
+            usUsage: 0x02,     // mouse
+            dwFlags: if want { RIDEV_INPUTSINK } else { RIDEV_REMOVE },
+            hwndTarget: if want { self.hwnd } else { HWND::default() },
+        };
+        let ok = unsafe { RegisterRawInputDevices(&[dev], std::mem::size_of::<RAWINPUTDEVICE>() as u32).is_ok() };
+        if ok {
+            self.mouse_watch = want;
+        } else {
+            log!("could not {} mouse movement", if want { "watch" } else { "stop watching" });
+        }
+        if !want {
+            self.kill(T_DESK_MOUSE);
+            self.desk_pending = false;
+        }
+    }
+
+    /// WM_INPUT: the mouse moved somewhere. Handled on a short timer so a fast mouse
+    /// (hundreds of reports a second) costs at most one redraw per frame.
+    fn desk_input(&mut self) {
+        if self.mouse_watch && !self.desk_pending {
+            self.desk_pending = true;
+            self.schedule(T_DESK_MOUSE, ANIM_MS);
+        }
+    }
+
+    fn desk_mouse(&mut self) {
+        self.kill(T_DESK_MOUSE);
+        self.desk_pending = false;
+        if !self.desk_repel_wanted() {
+            return;
+        }
+        let mut pt = POINT::default();
+        unsafe {
+            let _ = GetCursorPos(&mut pt);
+        }
+        match self.layer_at(pt) {
+            Some((i, p)) => self.set_repel(i, p),
+            None => self.release_repel(),
+        }
+    }
+
+    /// The desktop layer under the screen point and the point in monitor coordinates, if the
+    /// desktop itself is what's visible there (not a window on top of it).
+    fn layer_at(&self, pt: POINT) -> Option<(usize, Pt)> {
+        let top = unsafe { WindowFromPoint(pt) };
+        let root = unsafe { GetAncestor(top, GA_ROOT) };
+        let mut class = [0u16; 32];
+        let n = unsafe { GetClassNameW(root, &mut class) }.max(0) as usize;
+        let name = String::from_utf16_lossy(&class[..n]);
+        if name != "Progman" && name != "WorkerW" {
+            return None;
+        }
+        let mon = self.monitors.iter().find(|m| m.contains(pt.x, pt.y))?;
+        let i = self.layers.iter().position(|l| l.key == mon.key)?;
+        Some((i, Pt::new((pt.x - mon.rect.left) as f32, (pt.y - mon.rect.top) as f32)))
     }
 
     /// Hands memory that is no longer needed (bitmaps, fonts) back to Windows.
@@ -868,6 +1002,7 @@ impl App {
                 self.trim_memory();
             }
             T_ANIM => self.anim_step(),
+            T_DESK_MOUSE => self.desk_mouse(),
             _ => {}
         }
     }
@@ -956,6 +1091,12 @@ impl App {
             return;
         }
         self.editing = true;
+        // The desktop dots stop following the mouse; the overlays take over.
+        self.repel = None;
+        self.repel_strength = 0.0;
+        self.anim_tick = None;
+        self.kill(T_ANIM);
+        self.update_mouse_watch();
         self.editor.selected = None;
         self.show_hint = true;
         self.render_overlays(None);
@@ -1094,23 +1235,37 @@ impl App {
         ov.surface.present_dirty(ov.hwnd, pos, RECT { left: x, top: y, right: x + w, bottom: y + h });
     }
 
-    fn overlay_scale(&self, i: usize) -> f32 {
-        self.overlay_monitor(i).map_or(1.0, |m| m.scale())
+    /// Scale of the surface the dots move on: overlay `i` while editing, else desktop layer `i`.
+    fn surface_scale(&self, i: usize) -> f32 {
+        let key = if self.editing { self.overlays.get(i).map(|o| &o.key) } else { self.layers.get(i).map(|l| &l.key) };
+        key.and_then(|k| find_monitor(&self.monitors, k)).map_or(1.0, |m| m.scale())
     }
 
-    /// Moves the dots' repel point to `p` on overlay `i` and eases the effect in.
+    /// Redraws `region` (monitor coordinates) of overlay `i` while editing, else of layer `i`.
+    fn render_region(&mut self, i: usize, region: Rect) {
+        if self.editing {
+            self.render_overlay_region(i, region);
+        } else {
+            self.render_layer_region(i, region);
+        }
+    }
+
+    /// Moves the dots' repel point to `p` on surface `i` and eases the effect in.
     fn set_repel(&mut self, i: usize, p: Pt) {
         if let Some((j, q)) = self.repel {
             if j != i {
                 // The mouse moved to another screen: let the old one settle at once.
                 self.repel = None;
-                let sc = self.overlay_scale(j);
-                self.render_overlay_region(j, render::repel_bounds(q, sc));
+                let sc = self.surface_scale(j);
+                self.render_region(j, render::repel_bounds(q, sc));
                 self.repel_strength = 0.0;
             }
         }
-        let sc = self.overlay_scale(i);
+        let sc = self.surface_scale(i);
         let prev = self.repel.map(|(_, q)| q);
+        if prev == Some(p) && self.repel_target == 1.0 {
+            return;
+        }
         self.repel = Some((i, p));
         self.repel_target = 1.0;
         self.start_anim();
@@ -1118,14 +1273,21 @@ impl App {
             Some(q) => render::repel_bounds(q, sc).union(&render::repel_bounds(p, sc)),
             None => render::repel_bounds(p, sc),
         };
-        self.render_overlay_region(i, dirty);
+        self.render_region(i, dirty);
+    }
+
+    /// The mouse left: the dots ease back to their places.
+    fn release_repel(&mut self) {
+        if self.repel.is_some() && self.repel_target != 0.0 {
+            self.repel_target = 0.0;
+            self.start_anim();
+        }
     }
 
     fn overlay_leave(&mut self, hwnd: HWND) {
         self.tracking_leave = None;
-        if self.overlay_index(hwnd).is_some() && self.repel.is_some() {
-            self.repel_target = 0.0;
-            self.start_anim();
+        if self.overlay_index(hwnd).is_some() {
+            self.release_repel();
         }
     }
 
@@ -1148,13 +1310,13 @@ impl App {
             self.repel_strength = self.repel_target;
         }
         if let Some((i, p)) = self.repel {
-            let sc = self.overlay_scale(i);
-            self.render_overlay_region(i, render::repel_bounds(p, sc));
+            let sc = self.surface_scale(i);
+            self.render_region(i, render::repel_bounds(p, sc));
             if done && self.repel_target == 0.0 {
                 self.repel = None;
             }
         }
-        if done || self.repel.is_none() || !self.editing {
+        if done || self.repel.is_none() {
             self.kill(T_ANIM);
             self.anim_tick = None;
         }
@@ -1464,12 +1626,13 @@ impl App {
         m.check(cmd::MIX_COLORS, "Mix colors where boxes overlap", self.cfg.mix_colors);
         m.sep();
         m.check(cmd::GRID_SHOW, "Grid view (dots on the desktop)", self.cfg.grid.show_on_desktop);
+        m.check(cmd::GRID_REPEL, "Dots move away from the mouse", self.cfg.grid.repel);
         m.check(cmd::SNAP, "Snap boxes to the icon grid", self.cfg.snap);
 
         let g = &self.cfg.grid;
         let mut dots = Menu::new();
         dots.check(cmd::GRID_SHOW, "Always show dots on the desktop", g.show_on_desktop);
-        dots.check(cmd::GRID_REPEL, "Dots move away from the mouse (while drawing)", g.repel);
+        dots.check(cmd::GRID_REPEL, "Dots move away from the mouse", g.repel);
         dots.sep();
         dots.heading("Color");
         for (i, (name, c)) in model::DOT_COLORS.iter().enumerate() {
@@ -1577,6 +1740,10 @@ impl App {
             }
             cmd::GRID_REPEL => {
                 self.cfg.grid.repel = !self.cfg.grid.repel;
+                if !self.cfg.grid.repel {
+                    self.release_repel();
+                }
+                self.update_mouse_watch();
                 self.save_soon();
             }
             _ if in_range(cmd::DOT_COLOR, model::DOT_COLORS.len()) => {
@@ -1936,6 +2103,11 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
         }
         WM_DISPLAYCHANGE | WM_SETTINGCHANGE | WM_DPICHANGED => {
             with_app(|a| a.schedule(T_REFRESH, 700));
+        }
+        // Raw mouse movement (only registered while the desktop dots follow the mouse).
+        // DefWindowProc still has to see it to free the input data.
+        WM_INPUT => {
+            with_app(|a| a.desk_input());
         }
         WM_QUERYENDSESSION => return LRESULT(1),
         WM_ENDSESSION => {

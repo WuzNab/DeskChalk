@@ -1,0 +1,15 @@
+Package: deskchalk
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: amd64
+Installed-Size: @SIZE@
+Depends: libc6 (>= 2.35), libx11-6, libx11-xcb1, libxcb1, libxcursor1, libxi6, libxkbcommon0, libxkbcommon-x11-0, libxrandr2
+Recommends: zenity | kdialog
+Suggests: gnome-shell-extension-appindicator
+Maintainer: WuzNab <87038818+WuzNab@users.noreply.github.com>
+Homepage: https://github.com/WuzNab/DeskChalk
+Description: Draw labeled boxes on your desktop wallpaper, behind your icons
+ A tiny tray app for sorting desktop chaos. Draw boxes on the desktop, name
+ them, and drag your icons into them. The boxes are painted into the
+ wallpaper, so they sit behind the icons and never touch your files.

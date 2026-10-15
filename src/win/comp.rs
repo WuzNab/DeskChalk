@@ -7,7 +7,7 @@
 //! composited with real per-pixel alpha, just like Explorer's own wallpaper window.
 
 use windows::core::Interface;
-use windows::Win32::Foundation::{HMODULE, HWND, POINT};
+use windows::Win32::Foundation::{HMODULE, HWND, POINT, RECT};
 use windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_10_0,
     D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_9_1, D3D_FEATURE_LEVEL_9_3,
@@ -101,6 +101,31 @@ impl Compositor {
             };
             let mut offset = POINT::default();
             let tex: ID3D11Texture2D = surface.BeginDraw(None, &mut offset)?;
+            let dst = D3D11_BOX {
+                left: offset.x as u32,
+                top: offset.y as u32,
+                front: 0,
+                right: offset.x as u32 + w,
+                bottom: offset.y as u32 + h,
+                back: 1,
+            };
+            self.ctx.UpdateSubresource(&tex, 0, Some(&dst), pixels.as_ptr() as *const _, w * 4, 0);
+            surface.EndDraw()?;
+            self.dcomp.Commit()
+        }
+    }
+
+    /// Replaces only the `w` x `h` area at (`x`, `y`) of what `present` showed last; the rest
+    /// of the surface keeps its content. Used for the dots moving away from the mouse.
+    pub fn present_region(&self, layer: &CompLayer, x: u32, y: u32, w: u32, h: u32, pixels: &[u8]) -> windows::core::Result<()> {
+        let Some((surface, sw, sh)) = &layer.surface else { return Err(windows::core::Error::empty()) };
+        if w == 0 || h == 0 || x + w > *sw || y + h > *sh {
+            return Ok(());
+        }
+        unsafe {
+            let update = RECT { left: x as i32, top: y as i32, right: (x + w) as i32, bottom: (y + h) as i32 };
+            let mut offset = POINT::default();
+            let tex: ID3D11Texture2D = surface.BeginDraw(Some(&update), &mut offset)?;
             let dst = D3D11_BOX {
                 left: offset.x as u32,
                 top: offset.y as u32,

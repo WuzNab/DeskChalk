@@ -2,6 +2,7 @@
 
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
+mod commands;
 mod config;
 mod editor;
 mod geom;
@@ -14,13 +15,19 @@ mod text;
 #[cfg(windows)]
 mod win;
 
+#[cfg(target_os = "linux")]
+mod linux;
+
 fn main() {
     #[cfg(windows)]
     win::main();
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    linux::main();
+
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
-        eprintln!("DeskChalk currently supports Windows. Linux support is planned.");
+        eprintln!("DeskChalk runs on Windows and Linux.");
         std::process::exit(1);
     }
 }

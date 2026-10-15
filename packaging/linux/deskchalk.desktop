@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=DeskChalk
+GenericName=Desktop boxes
+Comment=Draw labeled boxes on your desktop wallpaper, behind your icons
+Exec=deskchalk
+Icon=deskchalk
+Terminal=false
+Categories=Utility;
+Keywords=desktop;boxes;organize;wallpaper;icons;sort;
+StartupNotify=false
