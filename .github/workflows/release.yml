@@ -1,5 +1,5 @@
-# Push a tag like v0.2.1 (matching the version in Cargo.toml) to build
-# DeskChalk_Setup_v0.2.1.exe and DeskChalk_Portable_v0.2.1.exe and attach them to a release.
+# Push a tag like v0.2.2 (matching the version in Cargo.toml) to build
+# DeskChalk_Setup_v0.2.2.exe and DeskChalk_Portable_v0.2.2.exe and attach them to a release.
 name: Release
 
 on:

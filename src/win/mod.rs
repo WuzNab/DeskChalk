@@ -93,6 +93,7 @@ const ICON_TOP_PAD: f32 = 2.0;
 
 pub const CMD_EDIT: usize = 1;
 pub const CMD_QUIT: usize = 2;
+pub const CMD_SHOW: usize = 3;
 
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 static COMMAND_MSG: AtomicU32 = AtomicU32::new(0);
@@ -128,18 +129,21 @@ pub fn main() {
         install::signal_running(CMD_QUIT);
         return;
     }
-    // One instance per user session; launching again opens edit mode in the running one.
+    // One instance per user session. Launching it again (Start menu, desktop shortcut) opens
+    // the running one's menu; --edit opens edit mode in it.
     let _mutex = unsafe { CreateMutexW(None, true, w!("Local\\DeskChalk.Instance")) };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-        install::signal_running(CMD_EDIT);
+        install::signal_running(if has("--edit") { CMD_EDIT } else { CMD_SHOW });
         return;
     }
-    run(RunOpts { edit: has("--edit") });
+    run(RunOpts { edit: has("--edit"), announce: !has("--autostart") });
 }
 
 #[derive(Clone, Copy)]
 struct RunOpts {
     edit: bool,
+    /// Started by hand rather than at sign-in: say so, since the tray icon may be hidden.
+    announce: bool,
 }
 
 /// Lets popup menus follow the Windows dark/light app theme. Uses uxtheme's
@@ -489,6 +493,8 @@ impl App {
         unsafe {
             if !self.cfg.welcomed {
                 let _ = PostMessageW(Some(self.hwnd), WM_WELCOME, WPARAM(0), LPARAM(0));
+            } else if self.opts.announce && !self.opts.edit {
+                self.announce("DeskChalk is running");
             }
             if self.opts.edit {
                 let _ = PostMessageW(Some(self.hwnd), COMMAND_MSG.load(Relaxed), WPARAM(CMD_EDIT), LPARAM(0));
@@ -885,6 +891,14 @@ impl App {
     fn tray_double_click(&mut self) {
         self.kill(T_TRAY_CLICK);
         self.last_dblclk = Some(Instant::now());
+    }
+
+    /// A notification from the tray icon saying where DeskChalk lives and how to start drawing.
+    fn announce(&self, title: &str) {
+        self.tray.balloon(
+            title,
+            &format!("Double-click the pencil in the tray (or press {HOTKEY_LABEL}) to draw boxes on your desktop."),
+        );
     }
 
     // ---- edit mode ---------------------------------------------------------------
@@ -1863,10 +1877,7 @@ fn show_tray_menu(hwnd: HWND) {
 
 fn welcome(hwnd: HWND) {
     with_app(|a| {
-        a.tray.balloon(
-            "DeskChalk is running",
-            &format!("Double-click the pencil in the tray (or press {HOTKEY_LABEL}) to draw boxes on your desktop."),
-        );
+        a.announce("DeskChalk is running");
         a.cfg.welcomed = true;
         a.save_soon();
     });
@@ -1955,6 +1966,13 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             CMD_QUIT => unsafe {
                 let _ = DestroyWindow(hwnd);
             },
+            // Opened again from the Start menu or a shortcut: show its menu where you clicked,
+            // like other apps bring up their window (works even with notifications off).
+            CMD_SHOW => {
+                if with_app(|a| !a.editing && !a.uninstalling).unwrap_or(false) {
+                    show_tray_menu(hwnd);
+                }
+            }
             _ => {}
         }
         return LRESULT(0);

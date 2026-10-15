@@ -1,7 +1,7 @@
 ; DeskChalk setup wizard (Inno Setup 6).
 ; Build the app first (cargo build --release), then:
-;   iscc /DAppVersion=0.2.1 installer\DeskChalk.iss
-; Output: target\installer\DeskChalk_Setup_v0.2.1.exe
+;   iscc /DAppVersion=0.2.2 installer\DeskChalk.iss
+; Output: target\installer\DeskChalk_Setup_v0.2.2.exe
 ;
 ; Installs for the current user only (no admin rights), shows up in Settings > Apps and
 ; Programs and Features, updates in place, and uninstalls cleanly (boxes and settings too).

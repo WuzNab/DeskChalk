@@ -45,6 +45,9 @@ draw labeled zones on the desktop background, on the fly, and drag icons into th
    - create a desktop shortcut
 3. Find the pencil icon in your tray (on Windows 11 it may be under the **^** overflow; drag it onto the taskbar to keep it visible).
 
+Closed DeskChalk? Start it again from the Start menu or the desktop shortcut. If it's already running, opening it
+shows its menu right where you clicked.
+
 DeskChalk isn't code-signed yet, so Windows SmartScreen may say *"Windows protected your PC"*.
 Click **More info**, then **Run anyway**.
 
@@ -114,7 +117,7 @@ Linux support planned.
 | `--diag` | Print what DeskChalk detects (desktop windows, monitors, icon grid) |
 | `--log` | Write a log file |
 
-The setup supports the usual Inno Setup switches, e.g. `DeskChalk_Setup_v0.2.1.exe /SILENT` for an unattended install.
+The setup supports the usual Inno Setup switches, e.g. `DeskChalk_Setup_v0.2.2.exe /SILENT` for an unattended install.
 
 </details>
 
@@ -127,7 +130,7 @@ cargo build --release
 ```
 
 The app is `target\release\DeskChalk.exe` and runs from there without installing. To build the setup wizard,
-install [Inno Setup 6](https://jrsoftware.org/isinfo.php) and run `iscc /DAppVersion=0.2.1 installer\DeskChalk.iss`.
+install [Inno Setup 6](https://jrsoftware.org/isinfo.php) and run `iscc /DAppVersion=0.2.2 installer\DeskChalk.iss`.
 Push a `v*` tag to have GitHub Actions build both and publish a release.
 
 ## Support
